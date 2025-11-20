@@ -1,0 +1,20 @@
+# No subir variables sensibles
+.env
+
+# Cachés de Python
+__pycache__/
+*.pyc
+
+# Entornos virtuales
+venv/
+env/
+
+# Archivos del sistema
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Carpetas temporales
+tmp/
