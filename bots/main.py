@@ -670,6 +670,8 @@ async def registrar(interaction: discord.Interaction, plataforma: str, usuario: 
     
     import aiohttp  # necesario para llamar a n8n
 
+    await interaction.response.defer(ephemeral=True)
+
     usuario_limpio = usuario.lstrip('@')
     verification_code = f"CLIP{interaction.user.id}{plataforma[:3].upper()}"
 
@@ -750,7 +752,7 @@ async def registrar(interaction: discord.Interaction, plataforma: str, usuario: 
                 color=0xff0000
             )
             error_embed.add_field(name="Detalles", value=f"```{str(e)}```")
-            await interaction.response.send_message(embed=error_embed, ephemeral=True)
+            await interaction.followup.send(embed=embed, ephemeral=True)
             print(f"❌ Error en registrar: {e}")
 
 @main_bot.tree.command(name="verificar", description="Verifica tu cuenta después de poner el código en la bio")
