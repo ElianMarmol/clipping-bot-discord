@@ -680,21 +680,21 @@ async def registrar(interaction: discord.Interaction, plataforma: str, usuario: 
     async with main_bot.db_pool.acquire() as conn:
         try:
             # Crear/Actualizar usuario
-            await conn.execute('''
-                INSERT INTO users (discord_id, username) 
-                VALUES ($1, $2) 
-                ON CONFLICT (discord_id) DO UPDATE SET username = $2
-            ''', interaction.user.id, str(interaction.user))
+           await conn.execute('''
+            INSERT INTO users (discord_id, username) 
+            VALUES ($1, $2) 
+            ON CONFLICT (discord_id) DO UPDATE SET username = $2
+        ''', str(interaction.user.id), str(interaction.user))
 
             # Crear/actualizar social account
             await conn.execute('''
-                INSERT INTO social_accounts (discord_id, platform, username, verification_code, is_verified)
-                VALUES ($1, $2, $3, $4, $5)
-                ON CONFLICT (discord_id, platform, username) 
-                DO UPDATE SET 
-                    verification_code = EXCLUDED.verification_code,
-                    is_verified = EXCLUDED.is_verified
-            ''', interaction.user.id, plataforma.lower(), usuario_limpio, verification_code, False)
+            INSERT INTO social_accounts (discord_id, platform, username, verification_code, is_verified)
+            VALUES ($1, $2, $3, $4, $5)
+            ON CONFLICT (discord_id, platform, username) 
+            DO UPDATE SET 
+                verification_code = EXCLUDED.verification_code,
+                is_verified = EXCLUDED.is_verified
+        ''', str(interaction.user.id), plataforma.lower(), usuario_limpio, verification_code, False)
 
             # ─────────────────────────────────────────────
             # 🟦 LLAMAR A N8N SOLO SI ES YOUTUBE
