@@ -703,8 +703,14 @@ async def registrar(interaction: discord.Interaction, plataforma: str, usuario: 
                 n8n_url = os.getenv("N8N_YOUTUBE_WEBHOOK")
 
                 if n8n_url:
+                    # Recuperamos el discord_id REAL desde la base por seguridad
+                    correct_discord_id = await conn.fetchval(
+                        "SELECT discord_id FROM users WHERE discord_id = $1",
+                        interaction.user.id
+                    )
+
                     payload = {
-                        "discord_id": interaction.user.id,
+                        "discord_id": correct_discord_id,
                         "youtube_username": usuario_limpio,
                         "verification_code": verification_code
                     }
