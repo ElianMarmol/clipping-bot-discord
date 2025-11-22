@@ -751,7 +751,7 @@ async def registrar(interaction: discord.Interaction, plataforma: str, usuario: 
 
             embed.set_footer(text="¿Problemas? Contacta a un administrador")
 
-            await interaction.response.send_message(embed=embed, ephemeral=True)
+            await interaction.followup.send(embed=embed, ephemeral=True)
 
         except Exception as e:
             error_embed = discord.Embed(
