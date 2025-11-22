@@ -1157,6 +1157,49 @@ async def list_campaigns(interaction: discord.Interaction):
     embed.set_footer(text="Usa /publish-campaign para agregar una nueva")
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
+# ---------- /mis-videos ----------
+@main_bot.tree.command(name="mis-videos", description="Muestra tus videos trackeados y sus métricas")
+async def mis_videos(interaction: discord.Interaction):
+    async with main_bot.db_pool.acquire() as conn:
+        videos = await conn.fetch(
+            '''
+            SELECT post_url, views, likes, shares, uploaded_at
+            FROM tracked_posts
+            WHERE discord_id = $1
+            ORDER BY uploaded_at DESC
+            ''',
+            interaction.user.id
+        )
+
+    if not videos:
+        embed = discord.Embed(
+            title="🎬 Tus Videos Trackeados",
+            description="Todavía no hay videos registrados para tu cuenta.",
+            color=0xffa500
+        )
+        embed.set_footer(text="Los videos aparecen cuando n8n termina de procesarlos.")
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+        return
+
+    embed = discord.Embed(
+        title="🎬 Tus Videos Trackeados",
+        description=f"Total: **{len(videos)}** videos",
+        color=0x00ff00
+    )
+
+    for v in videos:
+        embed.add_field(
+            name=v['post_url'],
+            value=(
+                f"👁️ **Vistas:** {v['views']}\n"
+                f"❤️ **Likes:** {v['likes']}\n"
+                f"🔄 **Shares:** {v['shares']}\n"
+                f"📅 **Guardado:** {v['uploaded_at'].strftime('%d/%m/%Y %H:%M')}"
+            ),
+            inline=False
+        )
+
+    await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
 # =============================================
