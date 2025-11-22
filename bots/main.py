@@ -680,21 +680,21 @@ async def registrar(interaction: discord.Interaction, plataforma: str, usuario: 
     async with main_bot.db_pool.acquire() as conn:
         try:
             # Crear/Actualizar usuario
-           await conn.execute('''
-            INSERT INTO users (discord_id, username) 
-            VALUES ($1, $2) 
-            ON CONFLICT (discord_id) DO UPDATE SET username = $2
-        ''', str(interaction.user.id), str(interaction.user))
+            await conn.execute('''
+                INSERT INTO users (discord_id, username) 
+                VALUES ($1, $2) 
+                ON CONFLICT (discord_id) DO UPDATE SET username = $2
+            ''', str(interaction.user.id), str(interaction.user))
 
             # Crear/actualizar social account
-           await conn.execute('''
-            INSERT INTO social_accounts (discord_id, platform, username, verification_code, is_verified)
-            VALUES ($1, $2, $3, $4, $5)
-            ON CONFLICT (discord_id, platform, username) 
-            DO UPDATE SET 
-                verification_code = EXCLUDED.verification_code,
-                is_verified = EXCLUDED.is_verified
-        ''', str(interaction.user.id), plataforma.lower(), usuario_limpio, verification_code, False)
+            await conn.execute('''
+                INSERT INTO social_accounts (discord_id, platform, username, verification_code, is_verified)
+                VALUES ($1, $2, $3, $4, $5)
+                ON CONFLICT (discord_id, platform, username) 
+                DO UPDATE SET 
+                    verification_code = EXCLUDED.verification_code,
+                    is_verified = EXCLUDED.is_verified
+            ''', str(interaction.user.id), plataforma.lower(), usuario_limpio, verification_code, False)
 
             # ─────────────────────────────────────────────
             # 🟦 LLAMAR A N8N SOLO SI ES YOUTUBE
@@ -706,7 +706,7 @@ async def registrar(interaction: discord.Interaction, plataforma: str, usuario: 
                     # Recuperamos el discord_id REAL desde la base
                     correct_discord_id = await conn.fetchval(
                         "SELECT discord_id FROM users WHERE discord_id = $1",
-                        interaction.user.id
+                        str(interaction.user.id)
                     )
 
                     payload = {
@@ -718,7 +718,6 @@ async def registrar(interaction: discord.Interaction, plataforma: str, usuario: 
                     async with aiohttp.ClientSession() as session:
                         try:
                             print("📤 Enviando payload a n8n:", payload)
-
                             async with session.post(n8n_url, json=payload) as resp:
                                 print(f"📡 Llamando a n8n → {resp.status}")
                         except Exception as e:
@@ -764,7 +763,6 @@ async def registrar(interaction: discord.Interaction, plataforma: str, usuario: 
             )
             error_embed.add_field(name="Detalles", value=f"```{str(e)}```")
 
-            # SI YA RESPONDISTE ANTES → usar followup
             if interaction.response.is_done():
                 await interaction.followup.send(embed=error_embed, ephemeral=True)
             else:
