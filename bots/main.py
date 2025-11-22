@@ -668,22 +668,21 @@ async def attachmentspam(
 async def registrar(interaction: discord.Interaction, plataforma: str, usuario: str):
     """Registra y verifica cuentas de redes sociales"""
     
-    # Limpiar el nombre de usuario (quitar @ si existe)
+    import aiohttp  # necesario para llamar a n8n
+
     usuario_limpio = usuario.lstrip('@')
-    
-    # Generar código de verificación único
     verification_code = f"CLIP{interaction.user.id}{plataforma[:3].upper()}"
-    
+
     async with main_bot.db_pool.acquire() as conn:
         try:
-            # Asegurarse de que el usuario existe en la tabla users
+            # Crear/Actualizar usuario
             await conn.execute('''
                 INSERT INTO users (discord_id, username) 
                 VALUES ($1, $2) 
                 ON CONFLICT (discord_id) DO UPDATE SET username = $2
             ''', interaction.user.id, str(interaction.user))
-            
-            # Insertar o actualizar la cuenta social - CORREGIDO
+
+            # Crear/actualizar social account
             await conn.execute('''
                 INSERT INTO social_accounts (discord_id, platform, username, verification_code, is_verified)
                 VALUES ($1, $2, $3, $4, $5)
@@ -692,20 +691,42 @@ async def registrar(interaction: discord.Interaction, plataforma: str, usuario: 
                     verification_code = EXCLUDED.verification_code,
                     is_verified = EXCLUDED.is_verified
             ''', interaction.user.id, plataforma.lower(), usuario_limpio, verification_code, False)
-            
-            # Crear embed de registro
+
+            # ─────────────────────────────────────────────
+            # 🟦 LLAMAR A N8N SOLO SI ES YOUTUBE
+            # ─────────────────────────────────────────────
+            if plataforma.lower() == "youtube":
+                n8n_url = os.getenv("N8N_YOUTUBE_WEBHOOK")
+
+                if n8n_url:
+                    payload = {
+                        "discord_id": interaction.user.id,
+                        "youtube_username": usuario_limpio,
+                        "verification_code": verification_code
+                    }
+
+                    async with aiohttp.ClientSession() as session:
+                        try:
+                            async with session.post(n8n_url, json=payload) as resp:
+                                print(f"📡 Llamando a n8n → {resp.status}")
+                        except Exception as e:
+                            print(f"❌ Error llamando a n8n: {e}")
+                else:
+                    print("⚠️ No existe N8N_YOUTUBE_WEBHOOK en .env")
+            # ─────────────────────────────────────────────
+
             embed = discord.Embed(
                 title="📝 Registro Iniciado",
                 description=f"**{plataforma}**: `{usuario_limpio}`",
                 color=0x00ff00
             )
-            
+
             embed.add_field(
                 name="🔑 Código de Verificación",
                 value=f"```{verification_code}```",
                 inline=False
             )
-            
+
             embed.add_field(
                 name="📋 Pasos para Completar Registro",
                 value=(
@@ -717,25 +738,20 @@ async def registrar(interaction: discord.Interaction, plataforma: str, usuario: 
                 ),
                 inline=False
             )
-            
+
             embed.set_footer(text="¿Problemas? Contacta a un administrador")
-            
+
             await interaction.response.send_message(embed=embed, ephemeral=True)
-            
+
         except Exception as e:
-            # Manejar errores de base de datos
             error_embed = discord.Embed(
                 title="❌ Error en el Registro",
                 description="Ocurrió un error al procesar tu registro.",
                 color=0xff0000
             )
-            error_embed.add_field(
-                name="🔧 Detalles",
-                value=f"```{str(e)}```",
-                inline=False
-            )
+            error_embed.add_field(name="Detalles", value=f"```{str(e)}```")
             await interaction.response.send_message(embed=error_embed, ephemeral=True)
-            print(f"❌ Error en comando registrar: {e}")
+            print(f"❌ Error en registrar: {e}")
 
 @main_bot.tree.command(name="verificar", description="Verifica tu cuenta después de poner el código en la bio")
 @app_commands.describe(
