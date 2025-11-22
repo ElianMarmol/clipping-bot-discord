@@ -687,7 +687,7 @@ async def registrar(interaction: discord.Interaction, plataforma: str, usuario: 
         ''', str(interaction.user.id), str(interaction.user))
 
             # Crear/actualizar social account
-            await conn.execute('''
+           await conn.execute('''
             INSERT INTO social_accounts (discord_id, platform, username, verification_code, is_verified)
             VALUES ($1, $2, $3, $4, $5)
             ON CONFLICT (discord_id, platform, username) 
