@@ -28,11 +28,11 @@ class AdminBot(commands.Bot):
     async def setup_hook(self):
         # Conectar a la base de datos
         self.db_pool = await asyncpg.create_pool(
-            os.getenv('DATABASE_URL'),
-            ssl='require',
-            min_size=1,
-            max_size=2
-        )
+             os.getenv('DATABASE_URL'),
+             ssl='require',
+             min_size=1,
+             max_size=1
+            )
         await self.create_tables()
         await self.tree.sync()
         print("✅ Bot de Administración conectado y comandos sincronizados")
