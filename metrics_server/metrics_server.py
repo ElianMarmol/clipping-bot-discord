@@ -23,7 +23,7 @@ async def startup():
 
 @app.post("/youtube/metrics")
 async def save_metrics(payload: MetricsPayload):
-    print("📩 Recibido payload de N8N")
+    print("📩 Recibido payload de N8N:", payload.dict())
 
     async with app.db.acquire() as conn:
         for v in payload.videos:
@@ -44,11 +44,9 @@ async def save_metrics(payload: MetricsPayload):
     return {"status": "ok", "message": "Métricas guardadas correctamente"}
 
 
-# 🚀 ESTO ES LO IMPORTANTE: función async para ejecutar en paralelo
 async def start_metrics_server():
-    port = int(os.getenv("PORT", 5005))  # Railway define PORT automáticamente
-
-    config = uvicorn.Config(app, host="0.0.0.0", port=port)
+    port = int(os.getenv("PORT", 8000))   # railway PORT
+    config = uvicorn.Config(app, host="0.0.0.0", port=port, log_level="info")
     server = uvicorn.Server(config)
 
     print(f"🌐 metrics_server escuchando en el puerto {port}")
