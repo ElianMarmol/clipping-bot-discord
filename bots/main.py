@@ -716,13 +716,13 @@ async def registrar(interaction: discord.Interaction, plataforma: str, usuario: 
                     }
 
                     async with aiohttp.ClientSession() as session:
-                        try:
-                            async with session.post(n8n_url, json=payload) as resp:
-                                print(f"📡 Llamando a n8n → {resp.status}")
-                        except Exception as e:
-                            print(f"❌ Error llamando a n8n: {e}")
-                else:
-                    print("⚠️ No existe N8N_YOUTUBE_WEBHOOK en .env")
+                try:
+                    print("📤 Enviando payload a n8n:", payload)  # 👈 LOG COMPLETO
+                    
+                    async with session.post(n8n_url, json=payload) as resp:
+                        print(f"📡 Llamando a n8n → {resp.status}")
+                except Exception as e:
+                    print(f"❌ Error llamando a n8n: {e}")
             # ─────────────────────────────────────────────
 
             embed = discord.Embed(
