@@ -700,29 +700,29 @@ async def registrar(interaction: discord.Interaction, plataforma: str, usuario: 
             # 🟦 LLAMAR A N8N SOLO SI ES YOUTUBE
             # ─────────────────────────────────────────────
             if plataforma.lower() == "youtube":
-                n8n_url = os.getenv("N8N_YOUTUBE_WEBHOOK")
+            n8n_url = os.getenv("N8N_YOUTUBE_WEBHOOK")
 
-                if n8n_url:
-                    # Recuperamos el discord_id REAL desde la base por seguridad
-                    correct_discord_id = await conn.fetchval(
-                        "SELECT discord_id FROM users WHERE discord_id = $1",
-                        interaction.user.id
-                    )
+            if n8n_url:
+                correct_discord_id = await conn.fetchval(
+                    "SELECT discord_id FROM users WHERE discord_id = $1",
+                    interaction.user.id
+                )
 
-                    payload = {
-                        "discord_id": correct_discord_id,
-                        "youtube_username": usuario_limpio,
-                        "verification_code": verification_code
-                    }
+                payload = {
+                    "discord_id": correct_discord_id,
+                    "youtube_username": usuario_limpio,
+                    "verification_code": verification_code
+                }
 
-                    async with aiohttp.ClientSession() as session:
-                try:
-                    print("📤 Enviando payload a n8n:", payload)  # 👈 LOG COMPLETO
-                    
-                    async with session.post(n8n_url, json=payload) as resp:
-                        print(f"📡 Llamando a n8n → {resp.status}")
-                except Exception as e:
-                    print(f"❌ Error llamando a n8n: {e}")
+                async with aiohttp.ClientSession() as session:
+                    try:
+                        print("📤 Enviando payload a n8n:", payload)
+                        async with session.post(n8n_url, json=payload) as resp:
+                            print(f"📡 Llamando a n8n → {resp.status}")
+                    except Exception as e:
+                        print(f"❌ Error llamando a n8n: {e}")
+            else:
+                print("⚠️ No existe N8N_YOUTUBE_WEBHOOK en .env")
             # ─────────────────────────────────────────────
 
             embed = discord.Embed(
