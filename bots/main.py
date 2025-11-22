@@ -710,7 +710,7 @@ async def registrar(interaction: discord.Interaction, plataforma: str, usuario: 
                     )
 
                     payload = {
-                        "discord_id": correct_discord_id,
+                        "discord_id": str(correct_discord_id),
                         "youtube_username": usuario_limpio,
                         "verification_code": verification_code
                     }
