@@ -760,7 +760,13 @@ async def registrar(interaction: discord.Interaction, plataforma: str, usuario: 
                 color=0xff0000
             )
             error_embed.add_field(name="Detalles", value=f"```{str(e)}```")
-            await interaction.followup.send(embed=embed, ephemeral=True)
+
+            # SI YA RESPONDISTE ANTES → usar followup
+            if interaction.response.is_done():
+                await interaction.followup.send(embed=error_embed, ephemeral=True)
+            else:
+                await interaction.response.send_message(embed=error_embed, ephemeral=True)
+
             print(f"❌ Error en registrar: {e}")
 
 @main_bot.tree.command(name="verificar", description="Verifica tu cuenta después de poner el código en la bio")
