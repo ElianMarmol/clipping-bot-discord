@@ -93,6 +93,26 @@ class MainBot(commands.Bot):
                     views INTEGER DEFAULT 0,
                     likes INTEGER DEFAULT 0,
                     shares INTEGER DEFAULT 0,
+                    starting_views INTEGER DEFAULT 0,
+                    final_earned_usd NUMERIC DEFAULT 0,
+                    FOREIGN KEY (discord_id) REFERENCES users(discord_id)
+                )
+            ''')
+
+            # Tabla de posts trackeados de TikTok
+            await conn.execute('''
+                CREATE TABLE IF NOT EXISTS tracked_posts_tiktok (
+                    id SERIAL PRIMARY KEY,
+                    discord_id BIGINT,
+                    tiktok_url TEXT,
+                    is_bounty BOOLEAN DEFAULT FALSE,
+                    bounty_tag TEXT,
+                    uploaded_at TIMESTAMP DEFAULT NOW(),
+                    views INTEGER DEFAULT 0,
+                    likes INTEGER DEFAULT 0,
+                    shares INTEGER DEFAULT 0,
+                    starting_views INTEGER DEFAULT 0,
+                    final_earned_usd NUMERIC DEFAULT 0,
                     FOREIGN KEY (discord_id) REFERENCES users(discord_id)
                 )
             ''')
@@ -153,6 +173,48 @@ class MainBot(commands.Bot):
             type=discord.ActivityType.watching, 
             name="/about para información"
         ))
+
+    # =============================================
+    # SISTEMA AUTOMÁTICO DE CÁLCULO DE BOUNTIES
+    # =============================================
+    async def bounty_loop(self):
+        """Proceso automático que revisa videos en campañas y recalcula ganancias"""
+        await self.wait_until_ready()
+
+        while not self.is_closed():
+
+            async with self.db_pool.acquire() as conn:
+
+                # YouTube
+                yt_posts = await conn.fetch("""
+                    SELECT discord_id, post_url, bounty_tag, views
+                    FROM tracked_posts
+                    WHERE is_bounty = TRUE
+                """)
+
+                # TikTok
+                tt_posts = await conn.fetch("""
+                    SELECT discord_id, tiktok_url AS post_url, bounty_tag, views
+                    FROM tracked_posts_tiktok
+                    WHERE is_bounty = TRUE
+                """)
+
+                all_posts = yt_posts + tt_posts
+
+                for post in all_posts:
+                    is_youtube = "youtube.com" in post["post_url"]
+
+                    await calculate_bounty_earnings(
+                        conn,
+                        "tracked_posts" if is_youtube else "tracked_posts_tiktok",
+                        str(post['discord_id']),
+                        post['post_url'],
+                        post['bounty_tag'],
+                        post['views']
+                    )
+
+            # Ejecuta cada 5 minutos
+            await asyncio.sleep(300)    
 
 # Inicializar bot principal
 main_bot = MainBot()
@@ -1366,65 +1428,23 @@ async def set_bounty_rate(interaction: discord.Interaction, bounty_tag: str, amo
     )
     await interaction.response.send_message(embed=embed)
 
-    # =============================================
-# SISTEMA AUTOMÁTICO DE CÁLCULO DE BOUNTIES
-# =============================================
 
-async def bounty_loop(self):
-    """Proceso automático que revisa videos en campañas y recalcula ganancias"""
-    await self.wait_until_ready()
-
-    while not self.is_closed():
-
-        async with self.db_pool.acquire() as conn:
-
-            # YouTube
-            yt_posts = await conn.fetch("""
-                SELECT discord_id, post_url, bounty_tag, views
-                FROM tracked_posts
-                WHERE is_bounty = TRUE
-            """)
-
-            # TikTok
-            tt_posts = await conn.fetch("""
-                SELECT discord_id, tiktok_url AS post_url, bounty_tag, views
-                FROM tracked_posts_tiktok
-                WHERE is_bounty = TRUE
-            """)
-
-            all_posts = yt_posts + tt_posts
-
-            for post in all_posts:
-                is_youtube = "youtube.com" in post["post_url"]
-
-                await calculate_bounty_earnings(
-                    conn,
-                    "tracked_posts" if is_youtube else "tracked_posts_tiktok",
-                    str(post['discord_id']),
-                    post['post_url'],
-                    post['bounty_tag'],
-                    post['views']
-                )
-
-        # Ejecuta cada 5 minutos
-        await asyncio.sleep(300)
-
-    async def calculate_bounty_earnings(conn, table, discord_id, post_url, bounty_tag, current_views):
+async def calculate_bounty_earnings(conn, table, discord_id, post_url, bounty_tag, current_views):
     """Calcula y actualiza el total ganado en USD para un video en campaña"""
 
-    # Obtener payrate de bounty_tag
+    # Obtener payrate
     rate = await conn.fetchrow(
         "SELECT amount_usd, per_views FROM bounty_rates WHERE bounty_tag = $1",
         bounty_tag
     )
 
     if not rate:
-        return  # si no hay payrate configurado, no calcular nada
+        return  # no hay payrate configurado
 
     amount = float(rate["amount_usd"])
     per = int(rate["per_views"])
 
-    # Traer las starting views
+    # Traer los datos del video
     video = await conn.fetchrow(
         f"SELECT starting_views, final_earned_usd FROM {table} WHERE post_url = $1",
         post_url
