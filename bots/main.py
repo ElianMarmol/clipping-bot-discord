@@ -793,7 +793,7 @@ async def verificar(interaction: discord.Interaction, plataforma: str, usuario: 
         # Buscar la cuenta
         cuenta = await conn.fetchrow(
             'SELECT * FROM social_accounts WHERE discord_id = $1 AND platform = $2 AND username = $3',
-            interaction.user.id, plataforma.lower(), usuario_limpio
+            str(interaction.user.id), plataforma.lower(), usuario_limpio
         )
     
     if not cuenta:
@@ -893,7 +893,7 @@ async def mis_cuentas(interaction: discord.Interaction):
     async with main_bot.db_pool.acquire() as conn:
         cuentas = await conn.fetch(
             'SELECT platform, username, is_verified, verified_at FROM social_accounts WHERE discord_id = $1 ORDER BY is_verified DESC, platform',
-            interaction.user.id
+            str(interaction.user.id)
         )
     
     if not cuentas:
@@ -968,7 +968,7 @@ async def add_paypal(interaction: discord.Interaction, email: str, nombre: str, 
             INSERT INTO users (discord_id, username)
             VALUES ($1, $2)
             ON CONFLICT (discord_id) DO UPDATE SET username = $2
-        ''', interaction.user.id, str(interaction.user))
+        ''', str(interaction.user.id), str(interaction.user))
 
         # Insertar o actualizar el método de pago PayPal
         await conn.execute('''
@@ -976,7 +976,7 @@ async def add_paypal(interaction: discord.Interaction, email: str, nombre: str, 
             VALUES ($1, 'paypal', $2, $3, $4)
             ON CONFLICT (discord_id, method_type)
             DO UPDATE SET paypal_email = $2, first_name = $3, last_name = $4
-        ''', interaction.user.id, email, nombre, apellido)
+        ''', str(interaction.user.id), email, nombre, apellido)
 
     embed = discord.Embed(
         title="✅ Método de Pago Configurado",
@@ -998,7 +998,7 @@ async def payment_details(interaction: discord.Interaction):
     async with main_bot.db_pool.acquire() as conn:
         metodo = await conn.fetchrow(
             'SELECT paypal_email, first_name, last_name FROM payment_methods WHERE discord_id = $1 AND method_type = $2',
-            interaction.user.id, 'paypal'
+            str(interaction.user.id), 'paypal'
         )
 
     if not metodo:
@@ -1181,7 +1181,7 @@ async def mis_videos(interaction: discord.Interaction):
             WHERE discord_id = $1
             ORDER BY uploaded_at DESC
             ''',
-            interaction.user.id
+            str(interaction.user.id)
         )
 
     if not videos:
