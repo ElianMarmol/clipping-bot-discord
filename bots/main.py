@@ -35,6 +35,7 @@ class MainBot(commands.Bot):
         await self.tree.sync()
         
         print("✅ Bot Principal - Base de datos conectada")
+        self.bounty_task = asyncio.create_task(self.bounty_loop())
 
     async def create_tables(self):
         async with self.db_pool.acquire() as conn:
@@ -1213,6 +1214,240 @@ async def mis_videos(interaction: discord.Interaction):
         )
 
     await interaction.response.send_message(embed=embed, ephemeral=True)
+
+   # ---------- /set-bounty ---------- 
+
+  @main_bot.tree.command(name="set-bounty", description="Asigna un bounty/campaña a un video ya trackeado")
+@app_commands.describe(
+    plataforma="youtube o tiktok",
+    post_url="URL del video",
+    bounty_tag="Nombre o identificador de la campaña"
+)
+@app_commands.default_permissions(administrator=True)
+async def set_bounty(interaction: discord.Interaction, plataforma: str, post_url: str, bounty_tag: str):
+    """Activa una campaña sobre un video trackeado"""
+
+    plataforma = plataforma.lower()
+
+    if plataforma not in ["youtube", "tiktok"]:
+        await interaction.response.send_message("❌ Plataforma inválida. Usa youtube o tiktok.", ephemeral=True)
+        return
+
+    table = "tracked_posts" if plataforma == "youtube" else "tracked_posts_tiktok"
+
+    async with main_bot.db_pool.acquire() as conn:
+        # Buscar el post
+        post = await conn.fetchrow(
+            f"SELECT * FROM {table} WHERE post_url = $1",
+            post_url
+        )
+
+        if not post:
+            await interaction.response.send_message(
+                f"❌ No se encontró el post en `{table}`.\nAsegúrate de que el video esté registrado.",
+                ephemeral=True
+            )
+            return
+
+        # Actualizar como bounty + guardar baseline de views
+        await conn.execute(
+            f'''
+            UPDATE {table}
+            SET is_bounty = TRUE,
+                bounty_tag = $1,
+                starting_views = views,
+                final_earned_usd = 0
+            WHERE post_url = $2
+            ''',
+            bounty_tag, post_url
+        )
+
+    embed = discord.Embed(
+        title="🎯 Bounty Activado",
+        description=f"El video ahora está participando en la campaña **{bounty_tag}**",
+        color=0x00ff00
+    )
+
+    embed.add_field(name="🔗 Video", value=post_url, inline=False)
+    embed.add_field(name="🏷️ Campaña", value=bounty_tag, inline=True)
+    embed.add_field(name="📌 Plataforma", value=plataforma, inline=True)
+
+    await interaction.response.send_message(embed=embed)
+
+# ---------- /mis-bounties ----------
+
+@main_bot.tree.command(name="mis-bounties", description="Muestra tus videos que están participando en campañas/bounties")
+async def mis_bounties(interaction: discord.Interaction):
+    discord_id = str(interaction.user.id)
+
+    async with main_bot.db_pool.acquire() as conn:
+        yt = await conn.fetch(
+            '''
+            SELECT post_url, views, likes, shares, uploaded_at, bounty_tag
+            FROM tracked_posts
+            WHERE discord_id = $1 AND is_bounty = TRUE
+            ORDER BY uploaded_at DESC
+            ''',
+            discord_id
+        )
+
+        tt = await conn.fetch(
+            '''
+            SELECT tiktok_url AS post_url, views, likes, shares, uploaded_at, bounty_tag
+            FROM tracked_posts_tiktok
+            WHERE discord_id = $1 AND is_bounty = TRUE
+            ORDER BY uploaded_at DESC
+            ''',
+            discord_id
+        )
+
+    videos = yt + tt
+
+    if not videos:
+        await interaction.response.send_message(
+            "📭 No tienes videos participando en campañas todavía.",
+            ephemeral=True
+        )
+        return
+
+    embed = discord.Embed(
+        title="🎯 Tus Videos en Campañas",
+        description=f"Tienes **{len(videos)}** videos activos en bounties.",
+        color=0x00ff00
+    )
+
+    for v in videos:
+        embed.add_field(
+            name=f"🏷️ Campaña: {v['bounty_tag']}",
+            value=(
+                f"🔗 **Video:** {v['post_url']}\n"
+                f"👁️ **Views:** {v['views']}\n"
+                f"❤️ **Likes:** {v['likes']}\n"
+                f"🔄 **Shares:** {v['shares']}\n"
+                f"📅 **Trackeado desde:** {v['uploaded_at'].strftime('%d/%m/%Y %H:%M')}"
+            ),
+            inline=False
+        )
+
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+# ---------- /set-bounty-rate ----------
+
+@main_bot.tree.command(name="set-bounty-rate", description="Configura el pago por views de una campaña")
+@app_commands.describe(
+    bounty_tag="Identificador de la campaña",
+    amount_usd="USD que paga",
+    per_views="Cada cuántas views"
+)
+@app_commands.default_permissions(administrator=True)
+async def set_bounty_rate(interaction: discord.Interaction, bounty_tag: str, amount_usd: float, per_views: int):
+
+    async with main_bot.db_pool.acquire() as conn:
+        await conn.execute('''
+            CREATE TABLE IF NOT EXISTS bounty_rates (
+                id SERIAL PRIMARY KEY,
+                bounty_tag TEXT UNIQUE,
+                amount_usd NUMERIC,
+                per_views INT
+            )
+        ''')
+
+        await conn.execute('''
+            INSERT INTO bounty_rates (bounty_tag, amount_usd, per_views)
+            VALUES ($1, $2, $3)
+            ON CONFLICT (bounty_tag)
+            DO UPDATE SET amount_usd = EXCLUDED.amount_usd, per_views = EXCLUDED.per_views
+        ''', bounty_tag, amount_usd, per_views)
+
+    embed = discord.Embed(
+        title="💰 Payrate Configurado",
+        description=f"La campaña **{bounty_tag}** paga **${amount_usd} cada {per_views} views**.",
+        color=0x00ff00
+    )
+    await interaction.response.send_message(embed=embed)
+
+    # =============================================
+# SISTEMA AUTOMÁTICO DE CÁLCULO DE BOUNTIES
+# =============================================
+
+async def bounty_loop(self):
+    """Proceso automático que revisa videos en campañas y recalcula ganancias"""
+    await self.wait_until_ready()
+
+    while not self.is_closed():
+
+        async with self.db_pool.acquire() as conn:
+
+            # YouTube
+            yt_posts = await conn.fetch("""
+                SELECT discord_id, post_url, bounty_tag, views
+                FROM tracked_posts
+                WHERE is_bounty = TRUE
+            """)
+
+            # TikTok
+            tt_posts = await conn.fetch("""
+                SELECT discord_id, tiktok_url AS post_url, bounty_tag, views
+                FROM tracked_posts_tiktok
+                WHERE is_bounty = TRUE
+            """)
+
+            all_posts = yt_posts + tt_posts
+
+            for post in all_posts:
+                is_youtube = "youtube.com" in post["post_url"]
+
+                await calculate_bounty_earnings(
+                    conn,
+                    "tracked_posts" if is_youtube else "tracked_posts_tiktok",
+                    str(post['discord_id']),
+                    post['post_url'],
+                    post['bounty_tag'],
+                    post['views']
+                )
+
+        # Ejecuta cada 5 minutos
+        await asyncio.sleep(300)
+
+    async def calculate_bounty_earnings(conn, table, discord_id, post_url, bounty_tag, current_views):
+    """Calcula y actualiza el total ganado en USD para un video en campaña"""
+
+    # Obtener payrate de bounty_tag
+    rate = await conn.fetchrow(
+        "SELECT amount_usd, per_views FROM bounty_rates WHERE bounty_tag = $1",
+        bounty_tag
+    )
+
+    if not rate:
+        return  # si no hay payrate configurado, no calcular nada
+
+    amount = float(rate["amount_usd"])
+    per = int(rate["per_views"])
+
+    # Traer las starting views
+    video = await conn.fetchrow(
+        f"SELECT starting_views, final_earned_usd FROM {table} WHERE post_url = $1",
+        post_url
+    )
+
+    if not video:
+        return
+
+    starting = int(video["starting_views"])
+    earned_before = float(video["final_earned_usd"] or 0)
+
+    # Views ganadas
+    gained = max(current_views - starting, 0)
+
+    # Calcular pago
+    earned_usd = round((gained / per) * amount, 4)
+
+    # Solo actualizar si cambió
+    if earned_usd != earned_before:
+        await conn.execute(
+            f"UPDATE {table} SET final_earned_usd = $1 WHERE post_url = $2",
+            earned_usd, post_url
+        )
 
 
 # =============================================
