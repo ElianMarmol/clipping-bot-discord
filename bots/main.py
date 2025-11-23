@@ -1215,9 +1215,9 @@ async def mis_videos(interaction: discord.Interaction):
 
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
-   # ---------- /set-bounty ---------- 
+   # ---------- /set-bounty ----------
 
-  @main_bot.tree.command(name="set-bounty", description="Asigna un bounty/campaña a un video ya trackeado")
+@main_bot.tree.command(name="set-bounty", description="Asigna un bounty/campaña a un video ya trackeado")
 @app_commands.describe(
     plataforma="youtube o tiktok",
     post_url="URL del video",
