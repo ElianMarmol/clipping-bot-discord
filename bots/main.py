@@ -147,8 +147,8 @@ class MainBot(commands.Bot):
         
             print("✅ Tablas del Bot Principal creadas/verificadas")
 
-   async def on_ready(self):
-    print(f'✅ {self.user} se ha conectado a Discord!')
+    async def on_ready(self):
+        print(f'✅ {self.user} se ha conectado a Discord!')
 
     # ================================
     # 🧹 LIMPIEZA FORZADA (UNA SOLA VEZ)
