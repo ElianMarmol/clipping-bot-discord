@@ -150,49 +150,48 @@ class MainBot(commands.Bot):
     async def on_ready(self):
         print(f'✅ {self.user} se ha conectado a Discord!')
 
-    # ================================
-    # 🧹 LIMPIEZA FORZADA (UNA SOLA VEZ)
-    # ================================
-    # ⚠️ IMPORTANTE: ejecutar UNA VEZ para eliminar comandos globales viejos
-    try:
-        print("🧹 Eliminando TODOS los comandos globales…")
-        await self.http.bulk_overwrite_global_commands(
-            self.application_id,
-            []
+        # ================================
+        # 🧹 LIMPIEZA FORZADA (UNA SOLA VEZ)
+        # ================================
+        try:
+            print("🧹 Eliminando TODOS los comandos globales…")
+            await self.http.bulk_overwrite_global_commands(
+                self.application_id,
+                []
+            )
+            print("🧹 Comandos globales eliminados.")
+        except Exception as e:
+            print(f"❌ Error eliminando comandos globales: {e}")
+
+        # ================================
+        # 🔄 SINCRONIZAR COMANDOS DEL SERVIDOR
+        # ================================
+        try:
+            GUILD_ID = int(os.getenv("DISCORD_GUILD_ID"))
+
+            print("🔍 Sincronizando comandos del servidor…")
+            synced = await self.tree.sync(guild=discord.Object(id=GUILD_ID))
+
+            print(f"🔄 Comandos sincronizados: {len(synced)}")
+            print("📝 Comandos activos (guild scoped):")
+            for cmd in synced:
+                print(f"   • /{cmd.name}")
+
+        except Exception as e:
+            print(f'❌ Error sincronizando comandos guild: {e}')
+
+        # ================================
+        # ✔️ FINALIZADO
+        # ================================
+        self.start_time = datetime.now()
+        print(f'✅ Bot Principal conectado como {self.user.name}')
+
+        await self.change_presence(
+            activity=discord.Activity(
+                type=discord.ActivityType.watching,
+                name="/about para información"
+            )
         )
-        print("🧹 Comandos globales eliminados.")
-    except Exception as e:
-        print(f"❌ Error eliminando comandos globales: {e}")
-
-    # ================================
-    # 🔄 SINCRONIZAR COMANDOS DEL SERVIDOR
-    # ================================
-    try:
-        GUILD_ID = int(os.getenv("DISCORD_GUILD_ID"))
-
-        print("🔍 Sincronizando comandos del servidor…")
-        synced = await self.tree.sync(guild=discord.Object(id=GUILD_ID))
-
-        print(f"🔄 Comandos sincronizados: {len(synced)}")
-        print("📝 Comandos activos (guild scoped):")
-        for cmd in synced:
-            print(f"   • /{cmd.name}")
-
-    except Exception as e:
-        print(f'❌ Error sincronizando comandos guild: {e}')
-
-    # ================================
-    # ✔️ FINALIZADO
-    # ================================
-    self.start_time = datetime.now()
-    print(f'✅ Bot Principal conectado como {self.user.name}')
-
-    await self.change_presence(
-        activity=discord.Activity(
-            type=discord.ActivityType.watching,
-            name="/about para información"
-        )
-    )
 
     # =============================================
     # SISTEMA AUTOMÁTICO DE CÁLCULO DE BOUNTIES
