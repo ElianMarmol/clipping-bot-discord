@@ -151,34 +151,43 @@ class MainBot(commands.Bot):
         print(f'✅ {self.user} se ha conectado a Discord!')
 
         # ================================
-        # 🧹 LIMPIEZA FORZADA (UNA SOLA VEZ)
+        # 🧹 LIMPIEZA DE COMANDOS GLOBALES (DISCORD.PY COMPATIBLE)
         # ================================
         try:
-            print("🧹 Eliminando TODOS los comandos globales…")
-            await self.http.bulk_overwrite_global_commands(
-                self.application_id,
-                []
-            )
-            print("🧹 Comandos globales eliminados.")
+            print("🧹 Intentando limpiar comandos globales...")
+            
+            # Obtener los global commands
+            global_cmds = await self.tree.fetch_commands()
+            print(f"🌐 Comandos globales encontrados: {len(global_cmds)}")
+
+            # Limpiar comandos globales
+            self.tree.clear_commands(guild=None)
+            await self.tree.sync(guild=None)
+
+            print("🧹 Comandos globales limpiados correctamente.")
+
         except Exception as e:
-            print(f"❌ Error eliminando comandos globales: {e}")
+            print(f"❌ Error limpiando global commands: {e}")
 
         # ================================
-        # 🔄 SINCRONIZAR COMANDOS DEL SERVIDOR
+        # 🔄 SINCRONIZAR COMANDOS DE LA GUILD
         # ================================
         try:
-            GUILD_ID = int(os.getenv("DISCORD_GUILD_ID"))
+            guild_id = os.getenv("DISCORD_GUILD_ID")
+            if guild_id is None:
+                raise ValueError("DISCORD_GUILD_ID no está definido en el entorno.")
 
-            print("🔍 Sincronizando comandos del servidor…")
-            synced = await self.tree.sync(guild=discord.Object(id=GUILD_ID))
+            guild_id = int(guild_id)
 
-            print(f"🔄 Comandos sincronizados: {len(synced)}")
-            print("📝 Comandos activos (guild scoped):")
+            print(f"🔍 Sincronizando comandos de la guild {guild_id}...")
+            synced = await self.tree.sync(guild=discord.Object(id=guild_id))
+
+            print(f"🔄 {len(synced)} comandos sincronizados:")
             for cmd in synced:
                 print(f"   • /{cmd.name}")
 
         except Exception as e:
-            print(f'❌ Error sincronizando comandos guild: {e}')
+            print(f"❌ Error sincronizando comandos guild: {e}")
 
         # ================================
         # ✔️ FINALIZADO
