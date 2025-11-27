@@ -1188,7 +1188,7 @@ async def publish_campaign(
             await conn.execute('''
                 INSERT INTO campaigns (name, description, category, payrate, invite_link, thumbnail_url, created_by)
                 VALUES ($1, $2, $3, $4, $5, $6, $7)
-            ''', nombre, descripcion, categoria, payrate, invite_link, thumbnail_url, int(interaction.user.id))
+            ''', nombre, descripcion, categoria, payrate, invite_link, thumbnail_url, str(interaction.user.id))
 
         print("💾 Campaña guardada en BD.")
 
