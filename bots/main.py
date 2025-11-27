@@ -67,7 +67,6 @@ class MainBot(commands.Bot):
              max_size=1
             )
         await self.create_tables()
-        await self.tree.sync()
         
         print("✅ Bot Principal - Base de datos conectada")
         self.bounty_task = asyncio.create_task(self.bounty_loop())
@@ -188,27 +187,21 @@ class MainBot(commands.Bot):
         MAIN_ID = int(os.getenv("DISCORD_MAIN_BOT_ID", "0"))
 
         # ================================
-        # 🧹 LIMPIEZA DE GLOBALES (solo bot principal)
+        # 🔍 Verificar si es el bot principal
         # ================================
         if self.user.id == MAIN_ID:
-            print("🧹 Este bot es el principal → limpiará comandos globales")
-            try:
-                self.tree.clear_commands(guild=None)
-                await self.tree.sync(guild=None)
-                print("🧹 Comandos globales limpiados")
-            except Exception as e:
-                print(f"❌ Error limpiando global commands: {e}")
+            print("⭐ Este bot es el principal → NO borrará global commands (solo sync)")
         else:
             print("⏩ Este bot NO es principal → NO toca comandos globales")
 
         # ================================
-        # 🔄 SYNC DE GUILD (los 3 bots)
+        # 🔄 SYNC SOLO DE GUILD (siempre seguro)
         # ================================
         try:
             GUILD_ID = int(os.getenv("DISCORD_GUILD_ID"))
             synced = await self.tree.sync(guild=discord.Object(id=GUILD_ID))
 
-            print("📝 Comandos de esta guild sincronizados:")
+            print("📝 Comandos sincronizados en esta guild:")
             for cmd in synced:
                 print(f"   • /{cmd.name}")
 
