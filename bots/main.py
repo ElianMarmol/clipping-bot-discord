@@ -1143,6 +1143,14 @@ CAMPAIGNS_CHANNEL_ID = int(os.getenv("CAMPAIGNS_CHANNEL_ID", "0"))
     name="publish-campaign",
     description="Publica una nueva campaña en el canal de Active Campaigns"
 )
+@app_commands.describe(
+    nombre="Nombre de la campaña",
+    descripcion="Descripción de la campaña",
+    categoria="Categoría (Gaming, Gambling, Crypto, etc.)",
+    payrate="Ej: $5/1000 views, 20 USD per clip, etc.",
+    invite_link="Link de invitación del servidor",
+    thumbnail_url="Banner o imagen de la campaña (opcional)"
+)
 @app_commands.default_permissions(administrator=True)
 async def publish_campaign(
     interaction: discord.Interaction,
@@ -1153,71 +1161,85 @@ async def publish_campaign(
     invite_link: str,
     thumbnail_url: str = None
 ):
+    print("📥 Ejecutando publish_campaign()")
+    try:
+        # -----------------------------------
+        # VALIDAR CANAL
+        # -----------------------------------
+        print(f"📌 CAMPAIGNS_CHANNEL_ID = {CAMPAIGNS_CHANNEL_ID}")
 
-    # 🚀 Responder rápido para evitar timeout
-    await interaction.response.defer(ephemeral=True)
+        channel = interaction.client.get_channel(CAMPAIGNS_CHANNEL_ID)
+        print(f"🔎 Canal encontrado: {channel}")
 
-    print("📥 Ejecutando publish_campaign()…")
-    print(f"➡️ Datos recibidos: {nombre}, {categoria}, {invite_link}")
+        if not channel:
+            await interaction.response.send_message(
+                "❌ No se encontró el canal de campañas. Verifica el ID.",
+                ephemeral=True
+            )
+            print("❌ ERROR: canal = None")
+            return
 
-    print(f"📌 CAMPAIGNS_CHANNEL_ID = {CAMPAIGNS_CHANNEL_ID}")
+        # -----------------------------------
+        # GUARDAR EN DATABASE
+        # -----------------------------------
+        print("💾 Guardando campaña en BD...")
 
-    if CAMPAIGNS_CHANNEL_ID == 0:
-        await interaction.followup.send(
-            "⚠️ No está configurado **CAMPAIGNS_CHANNEL_ID** en Railway.",
+        async with main_bot.db_pool.acquire() as conn:
+            await conn.execute('''
+                INSERT INTO campaigns (name, description, category, payrate, invite_link, thumbnail_url, created_by)
+                VALUES ($1, $2, $3, $4, $5, $6, $7)
+            ''', nombre, descripcion, categoria, payrate, invite_link, thumbnail_url, int(interaction.user.id))
+
+        print("💾 Campaña guardada en BD.")
+
+        # -----------------------------------
+        # CREAR EMBED
+        # -----------------------------------
+        embed = discord.Embed(
+            title=f"🎯 {nombre}",
+            description=descripcion,
+            color=0x00ff00,
+            timestamp=datetime.now()
+        )
+        embed.add_field(name="🏷️ Categoría", value=categoria)
+        embed.add_field(name="💰 Payrate", value=payrate)
+        embed.add_field(name="📅 Fecha", value=datetime.now().strftime("%d/%m/%Y"))
+        embed.set_footer(text=f"Publicado por {interaction.user.display_name}")
+
+        if thumbnail_url:
+            embed.set_thumbnail(url=thumbnail_url)
+
+        # -----------------------------------
+        # ENVIAR MENSAJE
+        # -----------------------------------
+        print("📨 Enviando mensaje al canal...")
+
+        class JoinButton(View):
+            def __init__(self, link):
+                super().__init__()
+                self.add_item(Button(label="Join Server", style=discord.ButtonStyle.link, url=link))
+
+        await channel.send(embed=embed, view=JoinButton(invite_link))
+        print("📨 Mensaje enviado!")
+
+        # -----------------------------------
+        # RESPUESTA A DISCORD
+        # -----------------------------------
+        await interaction.response.send_message(
+            "✅ Campaña publicada correctamente.",
             ephemeral=True
         )
-        return
+        print("✅ Respuesta enviada a Discord.")
 
-    channel = interaction.client.get_channel(CAMPAIGNS_CHANNEL_ID)
-    print(f"🔎 Canal encontrado: {channel}")
-
-    if not channel:
-        await interaction.followup.send(
-            "❌ No se encontró el canal de campañas. Verifica el ID.",
-            ephemeral=True
-        )
-        return
-
-    # Guardar campaña
-    async with main_bot.db_pool.acquire() as conn:
-        await conn.execute('''
-            INSERT INTO campaigns (name, description, category, payrate, invite_link, thumbnail_url, created_by)
-            VALUES ($1, $2, $3, $4, $5, $6, $7)
-        ''', nombre, descripcion, categoria, payrate, invite_link, thumbnail_url, interaction.user.id)
-
-    print("💾 Campaña guardada en la base correctamente")
-
-    # Crear embed
-    embed = discord.Embed(
-        title=f"🎯 {nombre}",
-        description=descripcion,
-        color=0x00ff00,
-        timestamp=datetime.now()
-    )
-    embed.add_field(name="🏷️ Categoría", value=categoria, inline=True)
-    embed.add_field(name="💰 Payrate", value=payrate, inline=True)
-    embed.add_field(name="📅 Fecha", value=datetime.now().strftime("%d/%m/%Y"), inline=True)
-    embed.set_footer(text=f"Publicado por {interaction.user.display_name}")
-
-    if thumbnail_url:
-        embed.set_thumbnail(url=thumbnail_url)
-
-    # Botón
-    class JoinButton(View):
-        def __init__(self, link):
-            super().__init__()
-            self.add_item(Button(label="Join Server", style=discord.ButtonStyle.link, url=link))
-
-    await channel.send(embed=embed, view=JoinButton(invite_link))
-
-    # Confirmación (post defer)
-    await interaction.followup.send(
-        "✅ Campaña publicada correctamente en Active Campaigns.",
-        ephemeral=True
-    )
-
-    print("📢 Mensaje enviado correctamente al canal de campañas")
+    except Exception as e:
+        print("❌ ERROR EN publish_campaign:", e)
+        try:
+            if not interaction.response.is_done():
+                await interaction.response.send_message(f"❌ Error interno: {e}", ephemeral=True)
+            else:
+                await interaction.followup.send(f"❌ Error interno: {e}", ephemeral=True)
+        except:
+            pass
 
 
 # ---------- /edit-campaign ----------
