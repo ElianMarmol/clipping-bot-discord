@@ -798,26 +798,35 @@ async def registrar(interaction: discord.Interaction, plataforma: str, usuario: 
                     is_verified = EXCLUDED.is_verified
             ''', str(interaction.user.id), plataforma.lower(), usuario_limpio, verification_code, False)
 
-            # ─────────────────────────────────────────────
-            # 🟦 LLAMAR A N8N SEGÚN LA PLATAFORMA
-            # ─────────────────────────────────────────────
+           # ─────────────────────────────────────────────
+           # 🟦 LLAMAR A N8N SEGÚN LA PLATAFORMA
+           # ─────────────────────────────────────────────
             n8n_url = None
+            payload = None
 
-            if plataforma.lower() == "youtube":
+            plataforma_clean = plataforma.lower()
+
+            if plataforma_clean == "youtube":
                 n8n_url = os.getenv("N8N_YOUTUBE_WEBHOOK")
-
-            elif plataforma.lower() == "tiktok":
-                n8n_url = os.getenv("N8N_TIKTOK_WEBHOOK")  # ← NUEVO
-
-            # Si la plataforma tiene webhook configurado
-            if n8n_url:
                 payload = {
                     "discord_id": str(interaction.user.id),
                     "username": usuario_limpio,
-                    "platform": plataforma.lower(),
+                    "platform": plataforma_clean,
                     "verification_code": verification_code
                 }
 
+            elif plataforma_clean == "tiktok":
+                n8n_url = os.getenv("N8N_TIKTOK_WEBHOOK")
+                payload = {
+                    "discord_id": str(interaction.user.id),
+                    "username": usuario_limpio,
+                    "platform": plataforma_clean,
+                    "verification_code": verification_code,
+                    "tiktok_profile_url": f"https://www.tiktok.com/@{usuario_limpio}"  # ← OBLIGATORIO
+                }
+
+            # Si la plataforma tiene webhook configurado
+            if n8n_url and payload:
                 async with aiohttp.ClientSession() as session:
                     try:
                         print("📤 Enviando payload a n8n:", payload)
@@ -826,7 +835,7 @@ async def registrar(interaction: discord.Interaction, plataforma: str, usuario: 
                             print(await resp.text())
                     except Exception as e:
                         print(f"❌ Error llamando a n8n: {e}")
-            # ─────────────────────────────────────────────
+                # ─────────────────────────────────────────────
 
             embed = discord.Embed(
                 title="📝 Registro Iniciado",
