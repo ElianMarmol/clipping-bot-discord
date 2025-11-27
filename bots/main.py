@@ -61,13 +61,14 @@ class MainBot(commands.Bot):
     async def setup_hook(self):
         # Conectar a la base de datos
         self.db_pool = await asyncpg.create_pool(
-             os.getenv('DATABASE_URL'),
-             ssl='require',
-             min_size=1,
-             max_size=1
-            )
+            os.getenv('DATABASE_URL'),
+            ssl='require',
+            min_size=1,
+            max_size=1
+        )
+
         await self.create_tables()
-        
+
         print("✅ Bot Principal - Base de datos conectada")
         self.bounty_task = asyncio.create_task(self.bounty_loop())
 
@@ -81,8 +82,8 @@ class MainBot(commands.Bot):
                     created_at TIMESTAMP DEFAULT NOW()
                 )
             ''')
-        
-            # Tabla de redes sociales - VERSIÓN CORREGIDA
+
+            # Tabla de redes sociales (corregida)
             await conn.execute('''
                 CREATE TABLE IF NOT EXISTS social_accounts (
                     id SERIAL PRIMARY KEY,
@@ -93,12 +94,11 @@ class MainBot(commands.Bot):
                     is_verified BOOLEAN DEFAULT FALSE,
                     verified_at TIMESTAMP,
                     FOREIGN KEY (discord_id) REFERENCES users(discord_id),
-                    -- ESTA LÍNEA ES LA CLAVE: constraint única para ON CONFLICT
                     UNIQUE (discord_id, platform, username)
                 )
             ''')
-        
-            # Tabla de métodos de pago
+
+            # Tabla métodos de pago
             await conn.execute('''
                 CREATE TABLE IF NOT EXISTS payment_methods (
                     id SERIAL PRIMARY KEY,
@@ -114,7 +114,7 @@ class MainBot(commands.Bot):
                     UNIQUE (discord_id, method_type)
                 )
             ''')
-        
+
             # Tabla de posts trackeados
             await conn.execute('''
                 CREATE TABLE IF NOT EXISTS tracked_posts (
@@ -133,7 +133,7 @@ class MainBot(commands.Bot):
                 )
             ''')
 
-            # Tabla de posts trackeados de TikTok
+            # Tabla de posts TikTok
             await conn.execute('''
                 CREATE TABLE IF NOT EXISTS tracked_posts_tiktok (
                     id SERIAL PRIMARY KEY,
@@ -150,8 +150,8 @@ class MainBot(commands.Bot):
                     FOREIGN KEY (discord_id) REFERENCES users(discord_id)
                 )
             ''')
-        
-            # Tabla para configuración de servidor
+
+            # Configuración de servidor
             await conn.execute('''
                 CREATE TABLE IF NOT EXISTS server_settings (
                     guild_id BIGINT PRIMARY KEY,
@@ -163,7 +163,7 @@ class MainBot(commands.Bot):
                 )
             ''')
 
-            # Tabla de campañas (para Active Campaigns)
+            # Campañas
             await conn.execute('''
                 CREATE TABLE IF NOT EXISTS campaigns (
                     id SERIAL PRIMARY KEY,
@@ -178,42 +178,38 @@ class MainBot(commands.Bot):
                 )
             ''')
 
-        
             print("✅ Tablas del Bot Principal creadas/verificadas")
 
-     async def on_ready(self):
+    # ===============================
+    #  on_ready CORRECTO
+    # ===============================
+    async def on_ready(self):
         print(f"🔵 {self.user} conectado (ID: {self.user.id})")
 
-        # ================================
-        # 🔄 SYNC DE GUILD (siempre)
-        # ================================
+        # SYNC de guild
         try:
             GUILD_ID = int(os.getenv("DISCORD_GUILD_ID"))
             guild = discord.Object(id=GUILD_ID)
-
             synced = await self.tree.sync(guild=guild)
 
-            print(f"🔥 Comandos sincronizados en la guild {GUILD_ID}: {len(synced)}")
+            print(f"🔥 Comandos sincronizados en guild {GUILD_ID}: {len(synced)}")
             for cmd in synced:
                 print(f"   • /{cmd.name}")
 
         except Exception as e:
             print(f"❌ Error al sincronizar comandos guild: {e}")
 
-        # ================================
-        # ⭐ SYNC GLOBAL SOLO PARA EL BOT PRINCIPAL
-        # ================================
+        # SYNC global solo si es el bot principal
         MAIN_ID = int(os.getenv("DISCORD_MAIN_BOT_ID", "0"))
-
         if self.user.id == MAIN_ID:
-            print("⭐ Este bot es el principal → sincronizando GLOBAL commands…")
+            print("⭐ Bot principal → sincronizando comandos GLOBAL…")
             try:
                 globalsynced = await self.tree.sync()
-                print(f"🌍 Comandos globales sincronizados: {len(globalsynced)}")
+                print(f"🌍 Global commands: {len(globalsynced)}")
             except Exception as e:
-                print(f"❌ Error sincronizando comandos globales: {e}")
+                print(f"❌ Error global sync: {e}")
         else:
-            print("⏩ No es el bot principal → no toca comandos globales")
+            print("⏩ No es el bot principal → sin tocar comandos globales")
 
         print(f"🟢 Bot listo: {self.user.name}")
 
