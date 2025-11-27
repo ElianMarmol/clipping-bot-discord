@@ -181,39 +181,41 @@ class MainBot(commands.Bot):
         
             print("✅ Tablas del Bot Principal creadas/verificadas")
 
-    async def on_ready(self):
+     async def on_ready(self):
         print(f"🔵 {self.user} conectado (ID: {self.user.id})")
 
-    # ================================
-    # 🔄 FORZAR SIEMPRE SYNC EN LA GUILD
-    # ================================
-    try:
-        GUILD_ID = int(os.getenv("DISCORD_GUILD_ID"))
-        synced = await self.tree.sync(guild=discord.Object(id=GUILD_ID))
-
-        print(f"🔥 Comandos sincronizados en la guild {GUILD_ID}: {len(synced)}")
-        for cmd in synced:
-            print(f"   • /{cmd.name}")
-
-    except Exception as e:
-        print(f"❌ Error al sincronizar comandos de guild: {e}")
-
-    # ================================
-    # ⭐ SYNC GLOBAL SOLO SI ES EL BOT PRINCIPAL
-    # ================================
-    MAIN_ID = int(os.getenv("DISCORD_MAIN_BOT_ID", "0"))
-
-    if self.user.id == MAIN_ID:
-        print("⭐ Este bot es el principal → sincronizando GLOBAL commands…")
+        # ================================
+        # 🔄 SYNC DE GUILD (siempre)
+        # ================================
         try:
-            globalsynced = await self.tree.sync()
-            print(f"🌍 Comandos globales sincronizados: {len(globalsynced)}")
-        except Exception as e:
-            print(f"❌ Error sincronizando comandos globales: {e}")
-    else:
-        print("⏩ No es el bot principal → no toca comandos globales")
+            GUILD_ID = int(os.getenv("DISCORD_GUILD_ID"))
+            guild = discord.Object(id=GUILD_ID)
 
-    print(f"🟢 Bot listo: {self.user.name}")
+            synced = await self.tree.sync(guild=guild)
+
+            print(f"🔥 Comandos sincronizados en la guild {GUILD_ID}: {len(synced)}")
+            for cmd in synced:
+                print(f"   • /{cmd.name}")
+
+        except Exception as e:
+            print(f"❌ Error al sincronizar comandos guild: {e}")
+
+        # ================================
+        # ⭐ SYNC GLOBAL SOLO PARA EL BOT PRINCIPAL
+        # ================================
+        MAIN_ID = int(os.getenv("DISCORD_MAIN_BOT_ID", "0"))
+
+        if self.user.id == MAIN_ID:
+            print("⭐ Este bot es el principal → sincronizando GLOBAL commands…")
+            try:
+                globalsynced = await self.tree.sync()
+                print(f"🌍 Comandos globales sincronizados: {len(globalsynced)}")
+            except Exception as e:
+                print(f"❌ Error sincronizando comandos globales: {e}")
+        else:
+            print("⏩ No es el bot principal → no toca comandos globales")
+
+        print(f"🟢 Bot listo: {self.user.name}")
 
     # =============================================
     # SISTEMA AUTOMÁTICO DE CÁLCULO DE BOUNTIES
