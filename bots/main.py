@@ -1143,14 +1143,6 @@ CAMPAIGNS_CHANNEL_ID = int(os.getenv("CAMPAIGNS_CHANNEL_ID", "0"))
     name="publish-campaign",
     description="Publica una nueva campaña en el canal de Active Campaigns"
 )
-@app_commands.describe(
-    nombre="Nombre de la campaña",
-    descripcion="Descripción de la campaña",
-    categoria="Categoría (Gaming, Gambling, Crypto, etc.)",
-    payrate="Ej: $5/1000 views, 20 USD per clip, etc.",
-    invite_link="Link de invitación del servidor",
-    thumbnail_url="Banner o imagen de la campaña (opcional)"
-)
 @app_commands.default_permissions(administrator=True)
 async def publish_campaign(
     interaction: discord.Interaction,
@@ -1162,33 +1154,32 @@ async def publish_campaign(
     thumbnail_url: str = None
 ):
 
-    print("📥 Ejecutando publish_campaign()…")  # LOG IMPORTANTE
+    # 🚀 Responder rápido para evitar timeout
+    await interaction.response.defer(ephemeral=True)
+
+    print("📥 Ejecutando publish_campaign()…")
     print(f"➡️ Datos recibidos: {nombre}, {categoria}, {invite_link}")
 
-    # Validación del canal
     print(f"📌 CAMPAIGNS_CHANNEL_ID = {CAMPAIGNS_CHANNEL_ID}")
 
     if CAMPAIGNS_CHANNEL_ID == 0:
-        await interaction.response.send_message(
+        await interaction.followup.send(
             "⚠️ No está configurado **CAMPAIGNS_CHANNEL_ID** en Railway.",
             ephemeral=True
         )
-        print("❌ ERROR: CAMPAIGNS_CHANNEL_ID = 0")
         return
 
     channel = interaction.client.get_channel(CAMPAIGNS_CHANNEL_ID)
-
     print(f"🔎 Canal encontrado: {channel}")
 
     if not channel:
-        await interaction.response.send_message(
+        await interaction.followup.send(
             "❌ No se encontró el canal de campañas. Verifica el ID.",
             ephemeral=True
         )
-        print("❌ ERROR: get_channel devolvió None")
         return
 
-    # Guardar campaña en la base
+    # Guardar campaña
     async with main_bot.db_pool.acquire() as conn:
         await conn.execute('''
             INSERT INTO campaigns (name, description, category, payrate, invite_link, thumbnail_url, created_by)
@@ -1197,7 +1188,7 @@ async def publish_campaign(
 
     print("💾 Campaña guardada en la base correctamente")
 
-    # Embed
+    # Crear embed
     embed = discord.Embed(
         title=f"🎯 {nombre}",
         description=descripcion,
@@ -1218,11 +1209,10 @@ async def publish_campaign(
             super().__init__()
             self.add_item(Button(label="Join Server", style=discord.ButtonStyle.link, url=link))
 
-    # Enviar al canal de campañas
     await channel.send(embed=embed, view=JoinButton(invite_link))
 
-    # Confirmación al admin
-    await interaction.response.send_message(
+    # Confirmación (post defer)
+    await interaction.followup.send(
         "✅ Campaña publicada correctamente en Active Campaigns.",
         ephemeral=True
     )
