@@ -9,6 +9,41 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+async def calculate_bounty_earnings(conn, table, discord_id, post_url, bounty_tag, current_views):
+    """Calcula y actualiza el total ganado en USD para un video en campaña"""
+
+    rate = await conn.fetchrow(
+        "SELECT amount_usd, per_views FROM bounty_rates WHERE bounty_tag = $1",
+        bounty_tag
+    )
+
+    if not rate:
+        return
+
+    amount = float(rate["amount_usd"])
+    per = int(rate["per_views"])
+
+    video = await conn.fetchrow(
+        f"SELECT starting_views, final_earned_usd FROM {table} WHERE post_url = $1",
+        post_url
+    )
+
+    if not video:
+        return
+
+    starting = int(video["starting_views"])
+    earned_before = float(video["final_earned_usd"] or 0)
+
+    gained = max(current_views - starting, 0)
+
+    earned_usd = round((gained / per) * amount, 4)
+
+    if earned_usd != earned_before:
+        await conn.execute(
+            f"UPDATE {table} SET final_earned_usd = $1 WHERE post_url = $2",
+            earned_usd, post_url
+        )
+
 class MainBot(commands.Bot):
     def __init__(self):
         intents = discord.Intents.default()
@@ -148,59 +183,39 @@ class MainBot(commands.Bot):
             print("✅ Tablas del Bot Principal creadas/verificadas")
 
     async def on_ready(self):
-        print(f'✅ {self.user} se ha conectado a Discord!')
+        print(f"🔵 {self.user} conectado (ID: {self.user.id})")
+
+        MAIN_ID = int(os.getenv("DISCORD_MAIN_BOT_ID", "0"))
 
         # ================================
-        # 🧹 LIMPIEZA DE COMANDOS GLOBALES (DISCORD.PY COMPATIBLE)
+        # 🧹 LIMPIEZA DE GLOBALES (solo bot principal)
         # ================================
-        try:
-            print("🧹 Intentando limpiar comandos globales...")
-            
-            # Obtener los global commands
-            global_cmds = await self.tree.fetch_commands()
-            print(f"🌐 Comandos globales encontrados: {len(global_cmds)}")
-
-            # Limpiar comandos globales
-            self.tree.clear_commands(guild=None)
-            await self.tree.sync(guild=None)
-
-            print("🧹 Comandos globales limpiados correctamente.")
-
-        except Exception as e:
-            print(f"❌ Error limpiando global commands: {e}")
+        if self.user.id == MAIN_ID:
+            print("🧹 Este bot es el principal → limpiará comandos globales")
+            try:
+                self.tree.clear_commands(guild=None)
+                await self.tree.sync(guild=None)
+                print("🧹 Comandos globales limpiados")
+            except Exception as e:
+                print(f"❌ Error limpiando global commands: {e}")
+        else:
+            print("⏩ Este bot NO es principal → NO toca comandos globales")
 
         # ================================
-        # 🔄 SINCRONIZAR COMANDOS DE LA GUILD
+        # 🔄 SYNC DE GUILD (los 3 bots)
         # ================================
         try:
-            guild_id = os.getenv("DISCORD_GUILD_ID")
-            if guild_id is None:
-                raise ValueError("DISCORD_GUILD_ID no está definido en el entorno.")
+            GUILD_ID = int(os.getenv("DISCORD_GUILD_ID"))
+            synced = await self.tree.sync(guild=discord.Object(id=GUILD_ID))
 
-            guild_id = int(guild_id)
-
-            print(f"🔍 Sincronizando comandos de la guild {guild_id}...")
-            synced = await self.tree.sync(guild=discord.Object(id=guild_id))
-
-            print(f"🔄 {len(synced)} comandos sincronizados:")
+            print("📝 Comandos de esta guild sincronizados:")
             for cmd in synced:
                 print(f"   • /{cmd.name}")
 
         except Exception as e:
-            print(f"❌ Error sincronizando comandos guild: {e}")
+            print(f"❌ Error al sincronizar comandos guild: {e}")
 
-        # ================================
-        # ✔️ FINALIZADO
-        # ================================
-        self.start_time = datetime.now()
-        print(f'✅ Bot Principal conectado como {self.user.name}')
-
-        await self.change_presence(
-            activity=discord.Activity(
-                type=discord.ActivityType.watching,
-                name="/about para información"
-            )
-        )
+        print(f"🟢 Bot listo: {self.user.name}")
 
     # =============================================
     # SISTEMA AUTOMÁTICO DE CÁLCULO DE BOUNTIES
@@ -1455,47 +1470,6 @@ async def set_bounty_rate(interaction: discord.Interaction, bounty_tag: str, amo
         color=0x00ff00
     )
     await interaction.response.send_message(embed=embed)
-
-
-async def calculate_bounty_earnings(conn, table, discord_id, post_url, bounty_tag, current_views):
-    """Calcula y actualiza el total ganado en USD para un video en campaña"""
-
-    # Obtener payrate
-    rate = await conn.fetchrow(
-        "SELECT amount_usd, per_views FROM bounty_rates WHERE bounty_tag = $1",
-        bounty_tag
-    )
-
-    if not rate:
-        return  # no hay payrate configurado
-
-    amount = float(rate["amount_usd"])
-    per = int(rate["per_views"])
-
-    # Traer los datos del video
-    video = await conn.fetchrow(
-        f"SELECT starting_views, final_earned_usd FROM {table} WHERE post_url = $1",
-        post_url
-    )
-
-    if not video:
-        return
-
-    starting = int(video["starting_views"])
-    earned_before = float(video["final_earned_usd"] or 0)
-
-    # Views ganadas
-    gained = max(current_views - starting, 0)
-
-    # Calcular pago
-    earned_usd = round((gained / per) * amount, 4)
-
-    # Solo actualizar si cambió
-    if earned_usd != earned_before:
-        await conn.execute(
-            f"UPDATE {table} SET final_earned_usd = $1 WHERE post_url = $2",
-            earned_usd, post_url
-        )
 
 
 # =============================================

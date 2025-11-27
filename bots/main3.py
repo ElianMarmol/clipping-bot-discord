@@ -9,6 +9,7 @@ import uuid
 load_dotenv()
 TOKEN = os.getenv("DISCORD_EQUIPOS_BOT_TOKEN")
 DB_URL = os.getenv("DATABASE_URL")
+GUILD_ID = int(os.getenv("DISCORD_GUILD_ID"))
 
 # ====================================================
 #   CLASE PRINCIPAL DEL BOT
@@ -25,14 +26,22 @@ class ClippingEquipos(commands.Bot):
     async def setup_hook(self):
         # Conectar a la base de datos
         self.db_pool = await asyncpg.create_pool(
-             os.getenv('DATABASE_URL'),
-             ssl='require',
-             min_size=1,
-             max_size=1
-            )
+            os.getenv('DATABASE_URL'),
+            ssl='require',
+            min_size=1,
+            max_size=1
+        )
+
         await self.create_tables()
-        await self.tree.sync()
-        print("✅ Clipping Equipos conectado y comandos sincronizados")
+
+        # 🔥 SYNC SOLO EN LA GUILD → evita conflictos con los otros bots
+        try:
+            synced = await self.tree.sync(guild=discord.Object(id=GUILD_ID))
+            print(f"🟢 Comandos del Bot Equipos sincronizados en guild {GUILD_ID}: {len(synced)} comandos")
+        except Exception as e:
+            print(f"❌ Error sincronizando comandos del Bot Equipos: {e}")
+
+        print("✅ Bot Equipos inicializado")
 
     async def create_tables(self):
         async with self.db_pool.acquire() as conn:
@@ -58,6 +67,7 @@ class ClippingEquipos(commands.Bot):
                 UNIQUE (team_id, user_id)
             )
             ''')
+
         print("✅ Tablas 'teams' y 'team_members' listas")
 
     async def on_ready(self):
@@ -65,7 +75,6 @@ class ClippingEquipos(commands.Bot):
 
 
 bot = ClippingEquipos()
-
 # ====================================================
 #   /team-create
 # ====================================================

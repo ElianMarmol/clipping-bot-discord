@@ -26,15 +26,24 @@ class AdminBot(commands.Bot):
         self.start_time = datetime.now()
 
     async def setup_hook(self):
-        # Conectar a la base de datos
-        self.db_pool = await asyncpg.create_pool(
-             os.getenv('DATABASE_URL'),
-             ssl='require',
-             min_size=1,
-             max_size=1
-            )
+    # Conectar a la base de datos
+    self.db_pool = await asyncpg.create_pool(
+        os.getenv('DATABASE_URL'),
+        ssl='require',
+        min_size=1,
+        max_size=1
+    )
+
         await self.create_tables()
-        await self.tree.sync()
+
+    # --- SYNC SOLO EN LA GUILD ---
+        try:
+        GUILD_ID = int(os.getenv("DISCORD_GUILD_ID"))
+        synced = await self.tree.sync(guild=discord.Object(id=GUILD_ID))
+        print(f"🟢 Comandos del AdminBot sincronizados en guild {GUILD_ID}: {len(synced)} comandos")
+        except Exception as e:
+        print(f"❌ Error sincronizando comandos en guild (AdminBot): {e}")
+
         print("✅ Bot de Administración conectado y comandos sincronizados")
 
     async def create_tables(self):
