@@ -26,29 +26,39 @@ class AdminBot(commands.Bot):
         self.start_time = datetime.now()
 
     async def setup_hook(self):
-    # Conectar a la base de datos
-    self.db_pool = await asyncpg.create_pool(
-        os.getenv('DATABASE_URL'),
-        ssl='require',
-        min_size=1,
-        max_size=1
-    )
+        # Conectar a la base de datos
+        self.db_pool = await asyncpg.create_pool(
+            os.getenv('DATABASE_URL'),
+            ssl='require',
+            min_size=1,
+            max_size=1
+        )
 
         await self.create_tables()
 
-    # --- SYNC SOLO EN LA GUILD ---
+        # ===============================
+        # LIMPIEZA DE COMANDOS SOLO DEL ADMIN BOT
+        # ===============================
         try:
-        GUILD_ID = int(os.getenv("DISCORD_GUILD_ID"))
-        synced = await self.tree.sync(guild=discord.Object(id=GUILD_ID))
-        print(f"🟢 Comandos del AdminBot sincronizados en guild {GUILD_ID}: {len(synced)} comandos")
+            guild_id = int(os.getenv("DISCORD_GUILD_ID"))
+            admin_bot_id = int(os.getenv("DISCORD_ADMIN_BOT_ID"))
+
+            print("🧹 Limpiando comandos del AdminBot...")
+
+            guild = self.get_guild(guild_id)
+            if guild:
+                synced = await self.tree.sync(guild=guild)
+                print(f"🔄 Comandos del AdminBot sincronizados en guild: {len(synced)}")
+            else:
+                print("⚠️ AdminBot aún no está en el servidor.")
+
         except Exception as e:
-        print(f"❌ Error sincronizando comandos en guild (AdminBot): {e}")
+            print(f"❌ Error en setup_hook (admin bot): {e}")
 
         print("✅ Bot de Administración conectado y comandos sincronizados")
 
     async def create_tables(self):
         async with self.db_pool.acquire() as conn:
-            # Tabla de backups
             await conn.execute('''
                 CREATE TABLE IF NOT EXISTS server_backups (
                     id SERIAL PRIMARY KEY,
@@ -60,8 +70,7 @@ class AdminBot(commands.Bot):
                     created_at TIMESTAMP DEFAULT NOW()
                 )
             ''')
-            
-            # Tabla de anuncios
+
             await conn.execute('''
                 CREATE TABLE IF NOT EXISTS announcements (
                     id SERIAL PRIMARY KEY,
@@ -73,14 +82,14 @@ class AdminBot(commands.Bot):
                     created_at TIMESTAMP DEFAULT NOW()
                 )
             ''')
-            
+
             print("✅ Tablas de administración creadas")
 
     async def on_ready(self):
         self.start_time = datetime.now()
         print(f'✅ Bot de Administración conectado como {self.user.name}')
         await self.change_presence(activity=discord.Activity(
-            type=discord.ActivityType.watching, 
+            type=discord.ActivityType.watching,
             name="Sistema de Administración"
         ))
 
