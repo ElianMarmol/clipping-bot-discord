@@ -880,9 +880,9 @@ async def registrar(interaction: discord.Interaction, plataforma: str, usuario: 
 
             print(f"❌ Error en registrar: {e}")
 
-@main_bot.tree.command(name="verificar", description="Verifica tu cuenta después de poner el código en la bio")
+@main_bot.tree.command(name="verificar", description="Solicita a n8n que verifique tu código en la BIO")
 @app_commands.describe(
-    plataforma="Plataforma a verificar",
+    plataforma="Plataforma a verificar (youtube, tiktok, instagram)",
     usuario="Tu nombre de usuario"
 )
 @app_commands.choices(plataforma=[
@@ -894,107 +894,100 @@ async def registrar(interaction: discord.Interaction, plataforma: str, usuario: 
     app_commands.Choice(name="Facebook", value="facebook")
 ])
 async def verificar(interaction: discord.Interaction, plataforma: str, usuario: str):
-    """Verifica una cuenta después de la verificación"""
+    """Verifica una cuenta conectando con n8n para leer la bio"""
+    import aiohttp # Importación local por seguridad, o muévela arriba del todo
     
-    # Limpiar el nombre de usuario
+    await interaction.response.defer(ephemeral=True)
+    
+    plataforma = plataforma.lower()
     usuario_limpio = usuario.lstrip('@')
     
+    # 1. Obtener datos de la DB para ver el código esperado
     async with main_bot.db_pool.acquire() as conn:
-        # Buscar la cuenta
         cuenta = await conn.fetchrow(
-            'SELECT * FROM social_accounts WHERE discord_id = $1 AND platform = $2 AND username = $3',
-            str(interaction.user.id), plataforma.lower(), usuario_limpio
+            'SELECT * FROM social_accounts WHERE discord_id = $1 AND platform = $2',
+            str(interaction.user.id), plataforma
         )
     
+    # Validaciones básicas
     if not cuenta:
-        await interaction.response.send_message(
+        await interaction.followup.send(
             f"❌ No encontramos tu registro de **{plataforma}**: `{usuario_limpio}`\n"
-            f"Usa primero `/registrar {plataforma} {usuario_limpio}`",
+            f"Usa primero `/registrar {plataforma} {usuario_limpio}`", 
             ephemeral=True
         )
         return
-    
-    # Verificar si ya está verificada
+
     if cuenta['is_verified']:
         embed = discord.Embed(
             title="ℹ️ Cuenta Ya Verificada",
             description=f"**{plataforma}**: `{usuario_limpio}` ya estaba verificada.",
             color=0xffff00
         )
-        embed.add_field(
-            name="📅 Fecha de Verificación",
-            value=cuenta['verified_at'].strftime("%d/%m/%Y %H:%M") if cuenta['verified_at'] else "No disponible",
-            inline=False
-        )
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        await interaction.followup.send(embed=embed, ephemeral=True)
         return
+
+    # 2. Obtener URL del Webhook de n8n para esta plataforma
+    # Asegúrate de configurar estas variables en Railway/Env
+    webhook_var_name = f"N8N_VERIFY_WEBHOOK_{plataforma.upper()}"
+    n8n_webhook_url = os.getenv(webhook_var_name)
     
-    # Simular verificación (en producción aquí iría la lógica real de verificación API)
-    is_verified = True  # Esto simula una verificación exitosa
-    
-    if is_verified:
-        async with main_bot.db_pool.acquire() as conn:
-            await conn.execute(
-                'UPDATE social_accounts SET is_verified = $1, verified_at = $2 WHERE id = $3',
-                True, datetime.now(), cuenta['id']
-            )
-        
-        # Embed de éxito
-        embed = discord.Embed(
-            title="✅ ¡Cuenta Verificada!",
-            description=f"**{plataforma}**: `{usuario_limpio}`",
-            color=0x00ff00
+    if not n8n_webhook_url:
+        await interaction.followup.send(
+            f"❌ Error de configuración: No existe webhook para {plataforma} ({webhook_var_name}). Contacta al admin.", 
+            ephemeral=True
         )
-        
-        embed.add_field(
-            name="🎉 ¡Felicidades!",
-            value=(
-                "Tu cuenta ha sido verificada exitosamente.\n"
-                "**Ya puedes quitar el código de verificación de tu bio.**"
-            ),
-            inline=False
-        )
-        
-        embed.add_field(
-            name="📊 ¿Qué sigue?",
-            value=(
-                "• Ahora apareces en las búsquedas de administradores\n"
-                "• Puedes registrar más cuentas con `/registrar`\n"
-                "• Los admins pueden encontrarte por tus redes sociales"
-            ),
-            inline=False
-        )
-        
-    else:
-        embed = discord.Embed(
-            title="❌ Verificación Fallida",
-            description=f"No pudimos verificar **{plataforma}**: `{usuario_limpio}`",
-            color=0xff0000
-        )
-        
-        embed.add_field(
-            name="🔍 ¿Qué puede fallar?",
-            value=(
-                "• El código no está en tu bio\n"
-                "• El código es incorrecto\n"
-                "• La cuenta es privada\n"
-                "• Error temporal de la plataforma"
-            ),
-            inline=False
-        )
-        
-        embed.add_field(
-            name="🛠️ Solución",
-            value=(
-                "1. Asegúrate de que el código esté en tu BIO\n"
-                "2. Espera 2-3 minutos después de ponerlo\n"
-                "3. Intenta de nuevo con `/verificar`\n"
-                "4. Si sigue fallando, contacta a un admin"
-            ),
-            inline=False
-        )
-    
-    await interaction.response.send_message(embed=embed, ephemeral=True)
+        return
+
+    # 3. Llamar a n8n para que haga el trabajo sucio (Scraping de BIO)
+    payload = {
+        "discord_id": str(interaction.user.id),
+        "username": usuario_limpio,
+        "platform": plataforma,
+        "verification_code": cuenta['verification_code']
+    }
+
+    print(f"📡 Solicitando verificación a n8n: {plataforma} - {usuario_limpio}")
+
+    async with aiohttp.ClientSession() as session:
+        try:
+            async with session.post(n8n_webhook_url, json=payload) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    
+                    # n8n debe devolver un JSON como: { "verified": true } o { "verified": false }
+                    if data.get("verified") == True:
+                        # ÉXITO: n8n ya actualizó la DB mediante metrics_server, solo notificamos
+                        embed = discord.Embed(
+                            title="✅ ¡Cuenta Verificada!",
+                            description=f"**{plataforma}**: `{usuario_limpio}`",
+                            color=0x00ff00
+                        )
+                        embed.add_field(
+                            name="🎉 ¡Felicidades!",
+                            value="Tu cuenta ha sido verificada exitosamente. Ya puedes quitar el código de tu bio.",
+                            inline=False
+                        )
+                        await interaction.followup.send(embed=embed, ephemeral=True)
+                    else:
+                        # FALLO: n8n no encontró el código
+                        embed = discord.Embed(
+                            title="❌ Verificación Fallida",
+                            description=f"No encontramos el código `{cuenta['verification_code']}` en la bio de **{usuario_limpio}**.",
+                            color=0xff0000
+                        )
+                        embed.add_field(
+                            name="💡 Solución",
+                            value="Asegúrate de que el código esté visible en tu descripción y espera unos minutos.",
+                            inline=False
+                        )
+                        await interaction.followup.send(embed=embed, ephemeral=True)
+                else:
+                    await interaction.followup.send(f"❌ Error comunicando con n8n (Status: {resp.status}).", ephemeral=True)
+                    
+        except Exception as e:
+            print(f"❌ Error crítico verificando: {e}")
+            await interaction.followup.send("❌ Ocurrió un error interno al intentar verificar.", ephemeral=True)
 
 @main_bot.tree.command(name="mis-cuentas", description="Ver todas tus cuentas registradas")
 async def mis_cuentas(interaction: discord.Interaction):
