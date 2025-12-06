@@ -5,13 +5,19 @@ import os
 import asyncpg
 from datetime import datetime
 import asyncio
+import aiohttp
+import json
 from dotenv import load_dotenv
 
 load_dotenv()
 
+# ====================================================
+#   FUNCIONES AUXILIARES
+# ====================================================
+
 async def calculate_bounty_earnings(conn, table, discord_id, post_url, bounty_tag, current_views):
     """Calcula y actualiza el total ganado en USD para un video en campaña"""
-
+    # Verificamos la tarifa de la campaña
     rate = await conn.fetchrow(
         "SELECT amount_usd, per_views FROM bounty_rates WHERE bounty_tag = $1",
         bounty_tag
@@ -23,6 +29,7 @@ async def calculate_bounty_earnings(conn, table, discord_id, post_url, bounty_ta
     amount = float(rate["amount_usd"])
     per = int(rate["per_views"])
 
+    # Obtenemos datos del video (views iniciales y ganancia previa)
     video = await conn.fetchrow(
         f"SELECT starting_views, final_earned_usd FROM {table} WHERE post_url = $1",
         post_url
@@ -31,18 +38,23 @@ async def calculate_bounty_earnings(conn, table, discord_id, post_url, bounty_ta
     if not video:
         return
 
-    starting = int(video["starting_views"])
+    starting = int(video["starting_views"] or 0)
     earned_before = float(video["final_earned_usd"] or 0)
 
+    # Cálculo de ganancias (Views actuales - Views iniciales)
     gained = max(current_views - starting, 0)
-
     earned_usd = round((gained / per) * amount, 4)
 
+    # Solo actualizamos si hubo cambios
     if earned_usd != earned_before:
         await conn.execute(
             f"UPDATE {table} SET final_earned_usd = $1 WHERE post_url = $2",
             earned_usd, post_url
         )
+
+# ====================================================
+#   CLASE PRINCIPAL DEL BOT
+# ====================================================
 
 class MainBot(commands.Bot):
     def __init__(self):
@@ -59,35 +71,38 @@ class MainBot(commands.Bot):
         self.start_time = datetime.now()
 
     async def setup_hook(self):
-        # Conectar a la base de datos
+        # Conexión a Base de Datos
         self.db_pool = await asyncpg.create_pool(
             os.getenv('DATABASE_URL'),
             ssl='require',
             min_size=1,
-            max_size=1
+            max_size=5
         )
 
         await self.create_tables()
-
         print("✅ Bot Principal - Base de datos conectada")
+        
+        # Iniciar loop de pagos en segundo plano
         self.bounty_task = asyncio.create_task(self.bounty_loop())
 
     async def create_tables(self):
         async with self.db_pool.acquire() as conn:
-            # Tabla de usuarios
+            # ⚠️ CAMBIO IMPORTANTE: Usamos TEXT para discord_id para evitar problemas de INT/STR
+            
+            # 1. Tabla de Usuarios
             await conn.execute('''
                 CREATE TABLE IF NOT EXISTS users (
-                    discord_id BIGINT PRIMARY KEY,
+                    discord_id TEXT PRIMARY KEY, 
                     username TEXT,
                     created_at TIMESTAMP DEFAULT NOW()
                 )
             ''')
 
-            # Tabla de redes sociales (corregida)
+            # 2. Cuentas Sociales
             await conn.execute('''
                 CREATE TABLE IF NOT EXISTS social_accounts (
                     id SERIAL PRIMARY KEY,
-                    discord_id BIGINT,
+                    discord_id TEXT,
                     platform TEXT,
                     username TEXT,
                     verification_code TEXT,
@@ -98,15 +113,13 @@ class MainBot(commands.Bot):
                 )
             ''')
 
-            # Tabla métodos de pago
+            # 3. Métodos de Pago
             await conn.execute('''
                 CREATE TABLE IF NOT EXISTS payment_methods (
                     id SERIAL PRIMARY KEY,
-                    discord_id BIGINT,
+                    discord_id TEXT,
                     method_type TEXT,
                     paypal_email TEXT,
-                    usdc_eth_address TEXT,
-                    usdc_sol_address TEXT,
                     first_name TEXT,
                     last_name TEXT,
                     added_at TIMESTAMP DEFAULT NOW(),
@@ -115,12 +128,13 @@ class MainBot(commands.Bot):
                 )
             ''')
 
-            # Tabla de posts trackeados
+            # 4. Posts YouTube
             await conn.execute('''
                 CREATE TABLE IF NOT EXISTS tracked_posts (
                     id SERIAL PRIMARY KEY,
-                    discord_id BIGINT,
-                    post_url TEXT,
+                    discord_id TEXT,
+                    post_url TEXT UNIQUE,
+                    video_id TEXT,
                     is_bounty BOOLEAN DEFAULT FALSE,
                     bounty_tag TEXT,
                     uploaded_at TIMESTAMP DEFAULT NOW(),
@@ -128,17 +142,17 @@ class MainBot(commands.Bot):
                     likes INTEGER DEFAULT 0,
                     shares INTEGER DEFAULT 0,
                     starting_views INTEGER DEFAULT 0,
-                    final_earned_usd NUMERIC DEFAULT 0,
-                    FOREIGN KEY (discord_id) REFERENCES users(discord_id)
+                    final_earned_usd NUMERIC DEFAULT 0
                 )
             ''')
 
-            # Tabla de posts TikTok
+            # 5. Posts TikTok
             await conn.execute('''
                 CREATE TABLE IF NOT EXISTS tracked_posts_tiktok (
                     id SERIAL PRIMARY KEY,
-                    discord_id BIGINT,
-                    tiktok_url TEXT,
+                    discord_id TEXT,
+                    tiktok_url TEXT UNIQUE,
+                    video_id TEXT,
                     is_bounty BOOLEAN DEFAULT FALSE,
                     bounty_tag TEXT,
                     uploaded_at TIMESTAMP DEFAULT NOW(),
@@ -146,12 +160,11 @@ class MainBot(commands.Bot):
                     likes INTEGER DEFAULT 0,
                     shares INTEGER DEFAULT 0,
                     starting_views INTEGER DEFAULT 0,
-                    final_earned_usd NUMERIC DEFAULT 0,
-                    FOREIGN KEY (discord_id) REFERENCES users(discord_id)
+                    final_earned_usd NUMERIC DEFAULT 0
                 )
             ''')
-
-            # Configuración de servidor
+            
+            # 6. Configuración Server
             await conn.execute('''
                 CREATE TABLE IF NOT EXISTS server_settings (
                     guild_id BIGINT PRIMARY KEY,
@@ -163,7 +176,7 @@ class MainBot(commands.Bot):
                 )
             ''')
 
-            # Campañas
+            # 7. Campañas
             await conn.execute('''
                 CREATE TABLE IF NOT EXISTS campaigns (
                     id SERIAL PRIMARY KEY,
@@ -173,1378 +186,344 @@ class MainBot(commands.Bot):
                     payrate TEXT,
                     invite_link TEXT,
                     thumbnail_url TEXT,
-                    created_by BIGINT,
+                    created_by TEXT,
                     created_at TIMESTAMP DEFAULT NOW()
                 )
             ''')
+            
+            # 8. Tarifas de Bounties
+            await conn.execute('''
+                CREATE TABLE IF NOT EXISTS bounty_rates (
+                    id SERIAL PRIMARY KEY,
+                    bounty_tag TEXT UNIQUE,
+                    amount_usd NUMERIC,
+                    per_views INT
+                )
+            ''')
 
-            print("✅ Tablas del Bot Principal creadas/verificadas")
+            print("✅ Tablas verificadas y listas.")
 
-    # ===============================
-    #  on_ready CORRECTO
-    # ===============================
     async def on_ready(self):
         print(f"🔵 {self.user} conectado (ID: {self.user.id})")
-
-        # SYNC de guild
+        # Sincronización Global de Comandos
         try:
-            GUILD_ID = int(os.getenv("DISCORD_GUILD_ID"))
-            guild = discord.Object(id=GUILD_ID)
-            synced = await self.tree.sync(guild=guild)
-
-            print(f"🔥 Comandos sincronizados en guild {GUILD_ID}: {len(synced)}")
-            for cmd in synced:
-                print(f"   • /{cmd.name}")
-
+            synced = await self.tree.sync()
+            print(f"🌍 Comandos globales sincronizados: {len(synced)}")
         except Exception as e:
-            print(f"❌ Error al sincronizar comandos guild: {e}")
+            print(f"❌ Error sync global: {e}")
 
-        # SYNC global solo si es el bot principal
-        MAIN_ID = int(os.getenv("DISCORD_MAIN_BOT_ID", "0"))
-        if self.user.id == MAIN_ID:
-            print("⭐ Bot principal → sincronizando comandos GLOBAL…")
-            try:
-                globalsynced = await self.tree.sync()
-                print(f"🌍 Global commands: {len(globalsynced)}")
-            except Exception as e:
-                print(f"❌ Error global sync: {e}")
-        else:
-            print("⏩ No es el bot principal → sin tocar comandos globales")
-
-        print(f"🟢 Bot listo: {self.user.name}")
-
-    # =============================================
-    # SISTEMA AUTOMÁTICO DE CÁLCULO DE BOUNTIES
-    # =============================================
     async def bounty_loop(self):
-        """Proceso automático que revisa videos en campañas y recalcula ganancias"""
+        """Loop infinito: revisa videos en campaña y actualiza ganancias"""
         await self.wait_until_ready()
-
         while not self.is_closed():
+            try:
+                async with self.db_pool.acquire() as conn:
+                    # Traer videos activos de YouTube
+                    yt_posts = await conn.fetch("""
+                        SELECT discord_id, post_url, bounty_tag, views
+                        FROM tracked_posts
+                        WHERE is_bounty = TRUE
+                    """)
 
-            async with self.db_pool.acquire() as conn:
+                    # Traer videos activos de TikTok (mapeando tiktok_url a post_url)
+                    tt_posts = await conn.fetch("""
+                        SELECT discord_id, tiktok_url AS post_url, bounty_tag, views
+                        FROM tracked_posts_tiktok
+                        WHERE is_bounty = TRUE
+                    """)
 
-                # YouTube
-                yt_posts = await conn.fetch("""
-                    SELECT discord_id, post_url, bounty_tag, views
-                    FROM tracked_posts
-                    WHERE is_bounty = TRUE
-                """)
+                    all_posts = yt_posts + tt_posts
 
-                # TikTok
-                tt_posts = await conn.fetch("""
-                    SELECT discord_id, tiktok_url AS post_url, bounty_tag, views
-                    FROM tracked_posts_tiktok
-                    WHERE is_bounty = TRUE
-                """)
+                    for post in all_posts:
+                        # Detectar plataforma por URL
+                        is_youtube = "youtube.com" in post["post_url"] or "youtu.be" in post["post_url"]
+                        table = "tracked_posts" if is_youtube else "tracked_posts_tiktok"
+                        
+                        await calculate_bounty_earnings(
+                            conn,
+                            table,
+                            str(post['discord_id']),
+                            post['post_url'],
+                            post['bounty_tag'],
+                            post['views'] or 0
+                        )
+            except Exception as e:
+                print(f"❌ Error en bounty_loop: {e}")
+            
+            await asyncio.sleep(300) # Esperar 5 minutos
 
-                all_posts = yt_posts + tt_posts
-
-                for post in all_posts:
-                    is_youtube = "youtube.com" in post["post_url"]
-
-                    await calculate_bounty_earnings(
-                        conn,
-                        "tracked_posts" if is_youtube else "tracked_posts_tiktok",
-                        str(post['discord_id']),
-                        post['post_url'],
-                        post['bounty_tag'],
-                        post['views']
-                    )
-
-            # Ejecuta cada 5 minutos
-            await asyncio.sleep(300)    
-
-# Inicializar bot principal
 main_bot = MainBot()
 
 # =============================================
-# 0. COMANDO /sync - SIMPLIFICADO
+# COMANDO: REGISTRAR (Conecta con n8n)
 # =============================================
-
-@main_bot.tree.command(name="sync", description="Sincronizar y limpiar comandos (solo admin)")
-@app_commands.default_permissions(administrator=True)
-async def sync(interaction: discord.Interaction):
-    """Comando manual para sincronizar y limpiar comandos fantasmas"""
-    
-    await interaction.response.defer(ephemeral=True)
-    
-    try:
-        # 1. Primero ver qué comandos hay actualmente en Discord
-        current_commands = await main_bot.tree.fetch_commands()
-        
-        # 2. Enfoque simple: sincronizar directamente sin clear_commands
-        # Esto eliminará automáticamente los comandos que ya no están en el código
-        synced = await main_bot.tree.sync()
-        
-        embed = discord.Embed(
-            title="✅ Comandos Sincronizados",
-            color=0x00ff00,
-            description="Comandos limpiados y sincronizados exitosamente"
-        )
-        embed.add_field(name="🗑️ Comandos anteriores", value=len(current_commands), inline=True)
-        embed.add_field(name="🔄 Comandos actuales", value=len(synced), inline=True)
-        embed.add_field(
-            name="📝 Comandos activos", 
-            value="\n".join([f"• `/{cmd.name}`" for cmd in synced]), 
-            inline=False
-        )
-        
-        # Mostrar qué comandos se eliminaron
-        current_names = {cmd.name for cmd in current_commands}
-        synced_names = {cmd.name for cmd in synced}
-        removed_commands = current_names - synced_names
-        
-        if removed_commands:
-            embed.add_field(
-                name="🚮 Comandos eliminados",
-                value=", ".join([f"`/{cmd}`" for cmd in removed_commands]),
-                inline=False
-            )
-        
-        embed.set_footer(text="Los comandos fantasmas han sido eliminados")
-        
-        await interaction.followup.send(embed=embed, ephemeral=True)
-        
-        # Log en consola
-        print(f"🔄 Comandos sincronizados manualmente por {interaction.user.name}")
-        print(f"📝 Comandos activos: {[cmd.name for cmd in synced]}")
-        
-    except Exception as e:
-        error_embed = discord.Embed(
-            title="❌ Error al Sincronizar",
-            color=0xff0000,
-            description=f"Error: {str(e)}"
-        )
-        await interaction.followup.send(embed=error_embed, ephemeral=True)
-        print(f"❌ Error en comando sync: {e}")
-
-# =============================================
-# 1. COMANDO /about - ACTUALIZADO CON REGISTROS
-# =============================================
-
-@main_bot.tree.command(name="info", description="Muestra estadísticas interesantes sobre el bot")
-async def about(interaction: discord.Interaction):
-    """Muestra estadísticas del bot y información general"""
-    
-    async with main_bot.db_pool.acquire() as conn:
-        # Obtener estadísticas de la base de datos
-        total_users = await conn.fetchval('SELECT COUNT(*) FROM users')
-        total_posts = await conn.fetchval('SELECT COUNT(*) FROM tracked_posts')
-        total_verified = await conn.fetchval('SELECT COUNT(*) FROM social_accounts WHERE is_verified = true')
-        total_registered_accounts = await conn.fetchval('SELECT COUNT(*) FROM social_accounts')
-        
-        # Calcular estadísticas de engagement
-        total_views = await conn.fetchval('SELECT COALESCE(SUM(views), 0) FROM tracked_posts')
-        total_likes = await conn.fetchval('SELECT COALESCE(SUM(likes), 0) FROM tracked_posts')
-        total_shares = await conn.fetchval('SELECT COALESCE(SUM(shares), 0) FROM tracked_posts')
-    
-    # Información del bot
-    bot_uptime = datetime.now() - main_bot.start_time
-    hours, remainder = divmod(int(bot_uptime.total_seconds()), 3600)
-    minutes, seconds = divmod(remainder, 60)
-    
-    embed = discord.Embed(
-        title="🤖 Acerca de Clipping Bot",
-        description="Plataforma líder para creadores de contenido y gestión de campañas",
-        color=0x9146FF,
-        timestamp=datetime.now()
-    )
-    
-    # Estadísticas principales
-    embed.add_field(
-        name="📊 Estadísticas Globales",
-        value=(
-            f"**👥 Usuarios Registrados:** {total_users}\n"
-            f"**📱 Cuentas Vinculadas:** {total_registered_accounts}\n"
-            f"**✅ Cuentas Verificadas:** {total_verified}\n"
-            f"**🎬 Posts Trackeados:** {total_posts}\n"
-            f"**⏱️ Tiempo Activo:** {hours}h {minutes}m"
-        ),
-        inline=False
-    )
-    
-    # Métricas de engagement
-    embed.add_field(
-        name="📈 Métricas de Contenido",
-        value=(
-            f"**👁️ Vistas Totales:** {total_views:,}\n"
-            f"**❤️ Likes Totales:** {total_likes:,}\n"
-            f"**🔄 Shares Totales:** {total_shares:,}"
-        ),
-        inline=False
-    )
-    
-    # Información técnica
-    embed.add_field(
-        name="🔧 Información Técnica",
-        value=(
-            f"**🟢 Estado:** Operativo\n"
-            f"**📡 Latencia:** {round(main_bot.latency * 1000)}ms\n"
-            f"**⚡ Versión:** 2.0.0\n"
-            f"**👨‍💻 Desarrollado por:** Latin Clipping"
-        ),
-        inline=False
-    )
-    
-    # Características
-    embed.add_field(
-        name="🎯 Características Principales",
-        value=(
-            "• Sistema de registro y verificación\n"
-            "• Seguimiento automático de métricas\n"
-            "• Gestión de pagos múltiples\n"
-            "• Leaderboards competitivos\n"
-            "• Detección de fraude\n"
-            "• Soporte para múltiples plataformas"
-        ),
-        inline=False
-    )
-    
-    embed.set_footer(text="💡 Usa /registrar para vincular tus cuentas")
-    
-    await interaction.response.send_message(embed=embed)
-
-# =============================================
-# 2. COMANDO /addrole
-# =============================================
-
-@main_bot.tree.command(name="addrole", description="Añade un rol a un usuario")
-@app_commands.describe(
-    usuario="El usuario al que añadir el rol",
-    rol="El rol a añadir"
-)
-@app_commands.default_permissions(manage_roles=True)
-async def addrole(interaction: discord.Interaction, usuario: discord.Member, rol: discord.Role):
-    """Añade un rol específico a un usuario"""
-    
-    # Verificar permisos del bot
-    if not interaction.guild.me.guild_permissions.manage_roles:
-        await interaction.response.send_message(
-            "❌ No tengo permisos para gestionar roles en este servidor.",
-            ephemeral=True
-        )
-        return
-    
-    # Verificar que el bot puede asignar ese rol
-    if rol.position >= interaction.guild.me.top_role.position:
-        await interaction.response.send_message(
-            "❌ No puedo asignar este rol porque está por encima de mi rol más alto.",
-            ephemeral=True
-        )
-        return
-    
-    # Verificar que el usuario que ejecuta el comando puede asignar ese rol
-    if rol.position >= interaction.user.top_role.position and interaction.user != interaction.guild.owner:
-        await interaction.response.send_message(
-            "❌ No puedes asignar este rol porque está por encima de tu rol más alto.",
-            ephemeral=True
-        )
-        return
-    
-    try:
-        # Añadir el rol al usuario
-        await usuario.add_roles(rol)
-        
-        embed = discord.Embed(
-            title="✅ Rol Añadido Exitosamente",
-            color=rol.color,
-            description=f"El rol {rol.mention} ha sido añadido a {usuario.mention}"
-        )
-        
-        embed.add_field(name="👤 Usuario", value=usuario.mention, inline=True)
-        embed.add_field(name="🎭 Rol", value=rol.mention, inline=True)
-        embed.add_field(name="👨‍💼 Asignado por", value=interaction.user.mention, inline=True)
-        
-        embed.set_footer(text=f"ID del Usuario: {usuario.id}")
-        
-        await interaction.response.send_message(embed=embed)
-        
-        # Log en consola
-        print(f"📝 Rol {rol.name} añadido a {usuario.name} por {interaction.user.name}")
-        
-    except discord.Forbidden:
-        await interaction.response.send_message(
-            "❌ No tengo permisos para añadir este rol. Por favor, verifica los permisos del bot.",
-            ephemeral=True
-        )
-    except discord.HTTPException as e:
-        await interaction.response.send_message(
-            f"❌ Error al añadir el rol: {str(e)}",
-            ephemeral=True
-        )
-
-# =============================================
-# 3. COMANDO /aisend
-# =============================================
-
-@main_bot.tree.command(name="aisend", description="Envía una respuesta IA a la pregunta de alguien (solo admin)")
-@app_commands.describe(
-    usuario="El usuario que recibirá la respuesta",
-    mensaje="El mensaje de respuesta de IA",
-    mensaje_original="El ID del mensaje original (opcional)"
-)
-@app_commands.default_permissions(administrator=True)
-async def aisend(interaction: discord.Interaction, usuario: discord.Member, mensaje: str, mensaje_original: str = None):
-    """Envía una respuesta generada por IA a un usuario específico"""
-    
-    # Verificar que el comando lo ejecuta un administrador
-    if not interaction.user.guild_permissions.administrator:
-        await interaction.response.send_message(
-            "❌ Este comando solo puede ser usado por administradores.",
-            ephemeral=True
-        )
-        return
-    
-    try:
-        # Crear embed de respuesta IA
-        embed = discord.Embed(
-            title="🤖 Respuesta Automática - Soporte Clipping",
-            description=mensaje,
-            color=0x00ff00,
-            timestamp=datetime.now()
-        )
-        
-        embed.add_field(
-            name="📝 Información",
-            value=(
-                "Esta es una respuesta automática generada por nuestro sistema de IA.\n"
-                "Si necesitas más ayuda, por favor responde a este mensaje."
-            ),
-            inline=False
-        )
-        
-        embed.set_footer(text="Soporte Clipping • Respuesta Automática")
-        
-        # Intentar enviar mensaje directo al usuario
-        try:
-            await usuario.send(embed=embed)
-            dm_success = True
-        except discord.Forbidden:
-            dm_success = False
-        
-        # Respuesta en el canal actual
-        response_embed = discord.Embed(
-            title="✅ Respuesta IA Enviada",
-            color=0x00ff00,
-            description=f"Respuesta enviada a {usuario.mention}"
-        )
-        
-        response_embed.add_field(name="👤 Usuario", value=usuario.mention, inline=True)
-        response_embed.add_field(name="📨 DM Exitoso", value="✅ Sí" if dm_success else "❌ No", inline=True)
-        response_embed.add_field(name="🔗 Mensaje Original", value=mensaje_original or "No especificado", inline=True)
-        
-        if not dm_success:
-            response_embed.add_field(
-                name="💡 Nota",
-                value="No se pudo enviar mensaje directo. El usuario debe tener los DMs habilitados.",
-                inline=False
-            )
-        
-        await interaction.response.send_message(embed=response_embed, ephemeral=True)
-        
-        # Log de la acción
-        print(f"🤖 Respuesta IA enviada a {usuario.name} por {interaction.user.name}: {mensaje[:50]}...")
-        
-    except Exception as e:
-        await interaction.response.send_message(
-            f"❌ Error al enviar la respuesta IA: {str(e)}",
-            ephemeral=True
-        )
-
-# =============================================
-# 4. COMANDO /ask
-# =============================================
-
-@main_bot.tree.command(name="ask", description="Haz una pregunta privada sobre KICK Clipping o RASMR")
-@app_commands.describe(
-    pregunta="Tu pregunta o consulta",
-    tipo_consulta="Tipo de consulta"
-)
-@app_commands.choices(tipo_consulta=[
-    app_commands.Choice(name="KICK Clipping", value="kick"),
-    app_commands.Choice(name="RASMR", value="rasmr"),
-    app_commands.Choice(name="Problemas Técnicos", value="tech"),
-    app_commands.Choice(name="Pagos", value="pagos"),
-    app_commands.Choice(name="Otro", value="otro")
-])
-async def ask(interaction: discord.Interaction, pregunta: str, tipo_consulta: str = "otro"):
-    """Envía una pregunta privada al equipo de soporte"""
-    
-    # Mapear tipos de consulta a nombres legibles
-    tipo_names = {
-        "kick": "KICK Clipping",
-        "rasmr": "RASMR", 
-        "tech": "Problemas Técnicos",
-        "pagos": "Pagos",
-        "otro": "Otro"
-    }
-    
-    tipo_nombre = tipo_names.get(tipo_consulta, "Otro")
-    
-    # Crear embed para el usuario (confirmación)
-    user_embed = discord.Embed(
-        title="✅ Pregunta Enviada",
-        color=0x00ff00,
-        description="Tu pregunta ha sido enviada al equipo de soporte. Te contactaremos pronto."
-    )
-    
-    user_embed.add_field(name="📋 Tipo", value=tipo_nombre, inline=True)
-    user_embed.add_field(name="👤 Remitente", value=interaction.user.mention, inline=True)
-    user_embed.add_field(name="🕒 Enviado", value=datetime.now().strftime("%H:%M"), inline=True)
-    
-    user_embed.add_field(
-        name="❓ Tu Pregunta",
-        value=pregunta,
-        inline=False
-    )
-    
-    user_embed.set_footer(text="Por favor, sé paciente mientras revisamos tu consulta")
-    
-    await interaction.response.send_message(embed=user_embed, ephemeral=True)
-    
-    # Buscar canal de soporte para enviar la pregunta del usuario
-    support_channel = None
-    for channel in interaction.guild.channels:
-        if "soporte" in channel.name.lower() or "support" in channel.name.lower() or "tickets" in channel.name.lower():
-            if isinstance(channel, discord.TextChannel):
-                support_channel = channel
-                break
-    
-    # Si no se encuentra canal de soporte, usar el canal actual
-    if not support_channel:
-        support_channel = interaction.channel
-    
-    # Crear embed para el equipo de soporte
-    support_embed = discord.Embed(
-        title="🎫 Nueva Pregunta de Soporte",
-        color=0xffa500,
-        timestamp=datetime.now()
-    )
-    
-    support_embed.add_field(name="👤 Usuario", value=f"{interaction.user.mention} ({interaction.user.id})", inline=True)
-    support_embed.add_field(name="📋 Tipo", value=tipo_nombre, inline=True)
-    support_embed.add_field(name="🔗 Canal", value=interaction.channel.mention, inline=True)
-    
-    support_embed.add_field(
-        name="❓ Pregunta",
-        value=pregunta,
-        inline=False
-    )
-    
-    support_embed.add_field(
-        name="⚡ Acciones Rápidas",
-        value=(
-            f"• Usar `/aisend` para respuesta automática\n"
-            f"• Contactar a {interaction.user.mention}\n"
-            f"• Revisar historial del usuario"
-        ),
-        inline=False
-    )
-    
-    support_embed.set_footer(text=f"ID: {interaction.user.id} • Usa /aisend para responder")
-    
-    # Enviar al canal de soporte
-    try:
-        await support_channel.send(embed=support_embed)
-        
-        # Log en consola
-        print(f"❓ Nueva pregunta de {interaction.user.name}: {pregunta[:50]}...")
-        
-    except Exception as e:
-        # Si falla el envío al canal de soporte, log del error
-        print(f"❌ Error enviando pregunta a canal de soporte: {str(e)}")
-
-# =============================================
-# 5. COMANDOS DE ATTACHMENTSPAM
-# =============================================
-
-@main_bot.tree.command(name="attachmentspam", description="Configuración de protección contra spam de archivos")
-@app_commands.describe(
-    accion="Acción a realizar",
-    castigo="Tipo de castigo para spam de archivos",
-    limite="Límite de archivos por timeframe",
-    timeframe="Tiempo en segundos para el límite"
-)
-@app_commands.choices(accion=[
-    app_commands.Choice(name="disable", value="disable"),
-    app_commands.Choice(name="punishment", value="punishment"),
-    app_commands.Choice(name="set", value="set")
-])
-@app_commands.choices(castigo=[
-    app_commands.Choice(name="Advertencia", value="warn"),
-    app_commands.Choice(name="Silenciar", value="mute"),
-    app_commands.Choice(name="Expulsar", value="kick"),
-    app_commands.Choice(name="Banear", value="ban")
-])
-@app_commands.default_permissions(manage_guild=True)
-async def attachmentspam(
-    interaction: discord.Interaction, 
-    accion: str,
-    castigo: str = None,
-    limite: int = None,
-    timeframe: int = None
-):
-    """Configura la protección contra spam de archivos"""
-    
-    async with main_bot.db_pool.acquire() as conn:
-        # Asegurarse de que existe la configuración del servidor
-        await conn.execute('''
-            INSERT INTO server_settings (guild_id) 
-            VALUES ($1) 
-            ON CONFLICT (guild_id) DO NOTHING
-        ''', interaction.guild.id)
-        
-        if accion == "disable":
-            # Desactivar protección
-            await conn.execute(
-                'UPDATE server_settings SET attachmentspam_enabled = FALSE WHERE guild_id = $1',
-                interaction.guild.id
-            )
-            
-            embed = discord.Embed(
-                title="✅ Protección Desactivada",
-                description="La protección contra spam de archivos ha sido **desactivada**.",
-                color=0xff0000
-            )
-            embed.set_footer(text="Los usuarios pueden enviar archivos sin límites")
-            
-        elif accion == "punishment" and castigo:
-            # Configurar castigo
-            await conn.execute(
-                'UPDATE server_settings SET attachmentspam_punishment = $1 WHERE guild_id = $2',
-                castigo, interaction.guild.id
-            )
-            
-            castigo_nombres = {
-                "warn": "Advertencia",
-                "mute": "Silenciar", 
-                "kick": "Expulsar",
-                "ban": "Banear"
-            }
-            
-            embed = discord.Embed(
-                title="✅ Castigo Configurado",
-                description=f"Castigo por spam de archivos establecido a: **{castigo_nombres.get(castigo, castigo)}**",
-                color=0x00ff00
-            )
-            
-        elif accion == "set" and limite and timeframe:
-            # Configurar límites
-            await conn.execute(
-                'UPDATE server_settings SET attachmentspam_limit = $1, attachmentspam_timeframe = $2 WHERE guild_id = $3',
-                limite, timeframe, interaction.guild.id
-            )
-            
-            embed = discord.Embed(
-                title="✅ Límites Configurados",
-                description=f"Límite de archivos establecido: **{limite} archivos** en **{timeframe} segundos**",
-                color=0x00ff00
-            )
-            embed.add_field(name="📊 Configuración", value=f"Máximo {limite} archivos por {timeframe} segundos")
-            
-        else:
-            await interaction.response.send_message(
-                "❌ Parámetros incorrectos. Usa: `/attachmentspam disable` o `/attachmentspam punishment <castigo>` o `/attachmentspam set <limite> <timeframe>`",
-                ephemeral=True
-            )
-            return
-    
-    await interaction.response.send_message(embed=embed)
-
-# =============================================
-# 6. SISTEMA DE REGISTRO - NUEVOS COMANDOS
-# =============================================
-
-@main_bot.tree.command(name="registrar", description="Registra tus cuentas de redes sociales en el sistema")
-@app_commands.describe(
-    plataforma="Plataforma a registrar",
-    usuario="Tu nombre de usuario en esa plataforma"
-)
+@main_bot.tree.command(name="registrar", description="Registra tus cuentas de redes sociales")
+@app_commands.describe(plataforma="Plataforma", usuario="Tu usuario")
 @app_commands.choices(plataforma=[
-    app_commands.Choice(name="Instagram", value="instagram"),
-    app_commands.Choice(name="Twitter/X", value="twitter"),
     app_commands.Choice(name="TikTok", value="tiktok"),
     app_commands.Choice(name="YouTube", value="youtube"),
-    app_commands.Choice(name="Twitch", value="twitch"),
-    app_commands.Choice(name="Facebook", value="facebook")
+    app_commands.Choice(name="Instagram", value="instagram")
 ])
 async def registrar(interaction: discord.Interaction, plataforma: str, usuario: str):
-    """Registra y verifica cuentas de redes sociales"""
-    
-    import aiohttp  # necesario para llamar a n8n
-
     await interaction.response.defer(ephemeral=True)
-
+    
     usuario_limpio = usuario.lstrip('@')
+    discord_id = str(interaction.user.id) # ⚠️ ID como String
     verification_code = f"CLIP{interaction.user.id}{plataforma[:3].upper()}"
+    plataforma = plataforma.lower()
 
     async with main_bot.db_pool.acquire() as conn:
         try:
-            # Crear/Actualizar usuario
+            # Upsert Usuario
             await conn.execute('''
-                INSERT INTO users (discord_id, username) 
-                VALUES ($1, $2) 
+                INSERT INTO users (discord_id, username) VALUES ($1, $2)
                 ON CONFLICT (discord_id) DO UPDATE SET username = $2
-            ''', str(interaction.user.id), str(interaction.user))
+            ''', discord_id, str(interaction.user))
 
-            # Crear/actualizar social account
+            # Upsert Cuenta Social
             await conn.execute('''
                 INSERT INTO social_accounts (discord_id, platform, username, verification_code, is_verified)
-                VALUES ($1, $2, $3, $4, $5)
+                VALUES ($1, $2, $3, $4, FALSE)
                 ON CONFLICT (discord_id, platform, username) 
-                DO UPDATE SET 
-                    verification_code = EXCLUDED.verification_code,
-                    is_verified = EXCLUDED.is_verified
-            ''', str(interaction.user.id), plataforma.lower(), usuario_limpio, verification_code, False)
+                DO UPDATE SET verification_code = EXCLUDED.verification_code
+            ''', discord_id, plataforma, usuario_limpio, verification_code)
 
-           # ─────────────────────────────────────────────
-           # 🟦 LLAMAR A N8N SEGÚN LA PLATAFORMA
-           # ─────────────────────────────────────────────
-            n8n_url = None
-            payload = None
-
-            plataforma_clean = plataforma.lower()
-
-            if plataforma_clean == "youtube":
-                n8n_url = os.getenv("N8N_YOUTUBE_WEBHOOK")
+            # Notificar a n8n (Opcional, para iniciar scraping inicial si se desea)
+            n8n_url = os.getenv(f"N8N_{plataforma.upper()}_WEBHOOK")
+            if n8n_url:
                 payload = {
-                    "discord_id": str(interaction.user.id),
+                    "discord_id": discord_id,
                     "username": usuario_limpio,
-                    "platform": plataforma_clean,
-                    "verification_code": verification_code
-                }
-
-            elif plataforma_clean == "tiktok":
-                n8n_url = os.getenv("N8N_TIKTOK_WEBHOOK")
-                payload = {
-                    "discord_id": str(interaction.user.id),
-                    "username": usuario_limpio,
-                    "platform": plataforma_clean,
+                    "platform": plataforma,
                     "verification_code": verification_code,
-                    "tiktok_profile_url": f"https://www.tiktok.com/@{usuario_limpio}"  # ← OBLIGATORIO
+                    "tiktok_profile_url": f"https://www.tiktok.com/@{usuario_limpio}"
                 }
+                # Ejecutar llamada sin bloquear si falla
+                try:
+                    async with aiohttp.ClientSession() as session:
+                        await session.post(n8n_url, json=payload)
+                except Exception as n8n_error:
+                    print(f"⚠️ Aviso: No se pudo contactar a n8n en el registro: {n8n_error}")
 
-            # Si la plataforma tiene webhook configurado
-            if n8n_url and payload:
-                async with aiohttp.ClientSession() as session:
-                    try:
-                        print("📤 Enviando payload a n8n:", payload)
-                        async with session.post(n8n_url, json=payload) as resp:
-                            print(f"📡 Llamando a n8n → {resp.status}")
-                            print(await resp.text())
-                    except Exception as e:
-                        print(f"❌ Error llamando a n8n: {e}")
-                # ─────────────────────────────────────────────
-
-            embed = discord.Embed(
-                title="📝 Registro Iniciado",
-                description=f"**{plataforma}**: `{usuario_limpio}`",
-                color=0x00ff00
-            )
-
-            embed.add_field(
-                name="🔑 Código de Verificación",
-                value=f"```{verification_code}```",
-                inline=False
-            )
-
-            embed.add_field(
-                name="📋 Pasos para Completar Registro",
-                value=(
-                    f"1. **Copia el código de arriba**\n"
-                    f"2. **Pégalo en tu BIO de {plataforma}**\n"
-                    f"3. **Mantén el código por 5 minutos**\n"
-                    f"4. **Usa** `/verificar {plataforma} {usuario_limpio}`\n"
-                    f"5. **¡Listo! Ya puedes quitar el código**"
-                ),
-                inline=False
-            )
-
-            embed.set_footer(text="¿Problemas? Contacta a un administrador")
-
+            # Respuesta al usuario
+            embed = discord.Embed(title="📝 Registro Iniciado", color=0x00ff00)
+            embed.add_field(name="🔑 Código de Verificación", value=f"```{verification_code}```", inline=False)
+            embed.add_field(name="Instrucciones", value=f"1. Pon este código en tu bio de **{plataforma}**.\n2. Espera unos segundos.\n3. Usa `/verificar`.", inline=False)
+            
             await interaction.followup.send(embed=embed, ephemeral=True)
 
         except Exception as e:
-            error_embed = discord.Embed(
-                title="❌ Error en el Registro",
-                description="Ocurrió un error al procesar tu registro.",
-                color=0xff0000
-            )
-            error_embed.add_field(name="Detalles", value=f"```{str(e)}```")
+            await interaction.followup.send(f"❌ Error al registrar: {str(e)}", ephemeral=True)
 
-            if interaction.response.is_done():
-                await interaction.followup.send(embed=error_embed, ephemeral=True)
-            else:
-                await interaction.response.send_message(embed=error_embed, ephemeral=True)
-
-            print(f"❌ Error en registrar: {e}")
-
-@main_bot.tree.command(name="verificar", description="Solicita a n8n que verifique tu código en la BIO")
-@app_commands.describe(
-    plataforma="Plataforma a verificar (youtube, tiktok, instagram)",
-    usuario="Tu nombre de usuario"
-)
+# =============================================
+# COMANDO: VERIFICAR (Llama a n8n Verify)
+# =============================================
+@main_bot.tree.command(name="verificar", description="Valida el código en tu bio usando n8n")
+@app_commands.describe(plataforma="Plataforma a verificar", usuario="Tu usuario")
 @app_commands.choices(plataforma=[
-    app_commands.Choice(name="Instagram", value="instagram"),
-    app_commands.Choice(name="Twitter/X", value="twitter"),
     app_commands.Choice(name="TikTok", value="tiktok"),
     app_commands.Choice(name="YouTube", value="youtube"),
-    app_commands.Choice(name="Twitch", value="twitch"),
-    app_commands.Choice(name="Facebook", value="facebook")
+    app_commands.Choice(name="Instagram", value="instagram")
 ])
 async def verificar(interaction: discord.Interaction, plataforma: str, usuario: str):
-    """Verifica una cuenta conectando con n8n para leer la bio"""
-    import aiohttp # Importación local por seguridad, o muévela arriba del todo
-    
     await interaction.response.defer(ephemeral=True)
     
+    discord_id = str(interaction.user.id) # ⚠️ ID como String
     plataforma = plataforma.lower()
-    usuario_limpio = usuario.lstrip('@')
     
-    # 1. Obtener datos de la DB para ver el código esperado
+    # 1. Verificar si existe en DB
     async with main_bot.db_pool.acquire() as conn:
         cuenta = await conn.fetchrow(
             'SELECT * FROM social_accounts WHERE discord_id = $1 AND platform = $2',
-            str(interaction.user.id), plataforma
+            discord_id, plataforma
         )
-    
-    # Validaciones básicas
+
     if not cuenta:
-        await interaction.followup.send(
-            f"❌ No encontramos tu registro de **{plataforma}**: `{usuario_limpio}`\n"
-            f"Usa primero `/registrar {plataforma} {usuario_limpio}`", 
-            ephemeral=True
-        )
+        await interaction.followup.send(f"❌ No tienes cuenta registrada. Usa `/registrar` primero.", ephemeral=True)
         return
 
     if cuenta['is_verified']:
-        embed = discord.Embed(
-            title="ℹ️ Cuenta Ya Verificada",
-            description=f"**{plataforma}**: `{usuario_limpio}` ya estaba verificada.",
-            color=0xffff00
-        )
-        await interaction.followup.send(embed=embed, ephemeral=True)
+        await interaction.followup.send("✅ Esta cuenta ya está verificada.", ephemeral=True)
         return
 
-    # 2. Obtener URL del Webhook de n8n para esta plataforma
-    # Asegúrate de configurar estas variables en Railway/Env
-    webhook_var_name = f"N8N_VERIFY_WEBHOOK_{plataforma.upper()}"
-    n8n_webhook_url = os.getenv(webhook_var_name)
-    
-    if not n8n_webhook_url:
-        await interaction.followup.send(
-            f"❌ Error de configuración: No existe webhook para {plataforma} ({webhook_var_name}). Contacta al admin.", 
-            ephemeral=True
-        )
+    # 2. Llamar al Webhook de Verificación de n8n
+    webhook_url = os.getenv(f"N8N_VERIFY_WEBHOOK_{plataforma.upper()}")
+    if not webhook_url:
+        await interaction.followup.send("❌ Error de configuración: No hay webhook de verificación definido.", ephemeral=True)
         return
 
-    # 3. Llamar a n8n para que haga el trabajo sucio (Scraping de BIO)
     payload = {
-        "discord_id": str(interaction.user.id),
-        "username": usuario_limpio,
+        "discord_id": discord_id,
+        "username": cuenta['username'],
         "platform": plataforma,
         "verification_code": cuenta['verification_code']
     }
 
-    print(f"📡 Solicitando verificación a n8n: {plataforma} - {usuario_limpio}")
-
-    async with aiohttp.ClientSession() as session:
-        try:
-            async with session.post(n8n_webhook_url, json=payload) as resp:
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(webhook_url, json=payload) as resp:
                 if resp.status == 200:
                     data = await resp.json()
-                    
-                    # n8n debe devolver un JSON como: { "verified": true } o { "verified": false }
-                    if data.get("verified") == True:
-                        # ÉXITO: n8n ya actualizó la DB mediante metrics_server, solo notificamos
-                        embed = discord.Embed(
-                            title="✅ ¡Cuenta Verificada!",
-                            description=f"**{plataforma}**: `{usuario_limpio}`",
-                            color=0x00ff00
-                        )
-                        embed.add_field(
-                            name="🎉 ¡Felicidades!",
-                            value="Tu cuenta ha sido verificada exitosamente. Ya puedes quitar el código de tu bio.",
-                            inline=False
-                        )
+                    if data.get("verified"):
+                        embed = discord.Embed(title="✅ ¡Verificado!", description="Código encontrado correctamente.", color=0x00ff00)
                         await interaction.followup.send(embed=embed, ephemeral=True)
                     else:
-                        # FALLO: n8n no encontró el código
-                        embed = discord.Embed(
-                            title="❌ Verificación Fallida",
-                            description=f"No encontramos el código `{cuenta['verification_code']}` en la bio de **{usuario_limpio}**.",
-                            color=0xff0000
-                        )
-                        embed.add_field(
-                            name="💡 Solución",
-                            value="Asegúrate de que el código esté visible en tu descripción y espera unos minutos.",
-                            inline=False
-                        )
+                        embed = discord.Embed(title="❌ No verificado", description=f"No encontramos el código `{cuenta['verification_code']}` en tu bio. Intenta de nuevo en unos momentos.", color=0xff0000)
                         await interaction.followup.send(embed=embed, ephemeral=True)
                 else:
-                    await interaction.followup.send(f"❌ Error comunicando con n8n (Status: {resp.status}).", ephemeral=True)
-                    
-        except Exception as e:
-            print(f"❌ Error crítico verificando: {e}")
-            await interaction.followup.send("❌ Ocurrió un error interno al intentar verificar.", ephemeral=True)
-
-@main_bot.tree.command(name="mis-cuentas", description="Ver todas tus cuentas registradas")
-async def mis_cuentas(interaction: discord.Interaction):
-    """Muestra todas las cuentas registradas del usuario"""
-    
-    async with main_bot.db_pool.acquire() as conn:
-        cuentas = await conn.fetch(
-            'SELECT platform, username, is_verified, verified_at FROM social_accounts WHERE discord_id = $1 ORDER BY is_verified DESC, platform',
-            str(interaction.user.id)
-        )
-    
-    if not cuentas:
-        embed = discord.Embed(
-            title="📱 Tus Cuentas Registradas",
-            description="Aún no tienes cuentas registradas.",
-            color=0xffa500
-        )
-        
-        embed.add_field(
-            name="💡 ¿Cómo registrar?",
-            value="Usa `/registrar` para vincular tus redes sociales",
-            inline=False
-        )
-        
-        await interaction.response.send_message(embed=embed, ephemeral=True)
-        return
-    
-    embed = discord.Embed(
-        title="📱 Tus Cuentas Registradas",
-        description=f"**{len(cuentas)}** cuenta(s) vinculada(s)",
-        color=0x00ff00
-    )
-    
-    cuentas_verificadas = 0
-    for cuenta in cuentas:
-        if cuenta['is_verified']:
-            cuentas_verificadas += 1
-            estado = "✅ Verificada"
-            fecha = cuenta['verified_at'].strftime("%d/%m/%Y") if cuenta['verified_at'] else "Reciente"
-        else:
-            estado = "⏳ Pendiente"
-            fecha = "Por verificar"
-        
-        embed.add_field(
-            name=f"{cuenta['platform'].title()} - {cuenta['username']}",
-            value=f"**Estado:** {estado}\n**Fecha:** {fecha}",
-            inline=True
-        )
-    
-    embed.set_footer(text=f"{cuentas_verificadas}/{len(cuentas)} cuentas verificadas")
-    
-    await interaction.response.send_message(embed=embed, ephemeral=True)
-
-
-# =============================================
-# 7. SISTEMA DE PAGOS - SOLO PAYPAL
-# =============================================
-
-import re  # asegúrate de tener esto al inicio del archivo si aún no lo importaste
-
-@main_bot.tree.command(name="add-paypal", description="Agregar o reemplazar tus datos de PayPal")
-@app_commands.describe(
-    email="Tu correo electrónico de PayPal",
-    nombre="Tu nombre",
-    apellido="Tu apellido"
-)
-async def add_paypal(interaction: discord.Interaction, email: str, nombre: str, apellido: str):
-    """Agrega o actualiza tu método de pago PayPal"""
-
-    # Validar formato del email
-    if not re.match(r"[^@]+@[^@]+\.[^@]+", email):
-        await interaction.response.send_message(
-            "❌ El correo electrónico ingresado no es válido. Verifícalo e inténtalo de nuevo.",
-            ephemeral=True
-        )
-        return
-
-    async with main_bot.db_pool.acquire() as conn:
-        # Asegurar que el usuario existe en la tabla users
-        await conn.execute('''
-            INSERT INTO users (discord_id, username)
-            VALUES ($1, $2)
-            ON CONFLICT (discord_id) DO UPDATE SET username = $2
-        ''', str(interaction.user.id), str(interaction.user))
-
-        # Insertar o actualizar el método de pago PayPal
-        await conn.execute('''
-            INSERT INTO payment_methods (discord_id, method_type, paypal_email, first_name, last_name)
-            VALUES ($1, 'paypal', $2, $3, $4)
-            ON CONFLICT (discord_id, method_type)
-            DO UPDATE SET paypal_email = $2, first_name = $3, last_name = $4
-        ''', str(interaction.user.id), email, nombre, apellido)
-
-    embed = discord.Embed(
-        title="✅ Método de Pago Configurado",
-        description="Tu información de PayPal ha sido guardada exitosamente.",
-        color=0x00ff00
-    )
-    embed.add_field(name="📧 Email", value=email, inline=True)
-    embed.add_field(name="👤 Nombre", value=f"{nombre} {apellido}", inline=True)
-    embed.add_field(name="💳 Método", value="PayPal", inline=True)
-    embed.set_footer(text="Usa /payment-details para ver o revisar tus métodos de pago")
-
-    await interaction.response.send_message(embed=embed, ephemeral=True)
-
-
-@main_bot.tree.command(name="payment-details", description="Ver tus detalles de pago actuales")
-async def payment_details(interaction: discord.Interaction):
-    """Muestra el método de pago PayPal del usuario"""
-
-    async with main_bot.db_pool.acquire() as conn:
-        metodo = await conn.fetchrow(
-            'SELECT paypal_email, first_name, last_name FROM payment_methods WHERE discord_id = $1 AND method_type = $2',
-            str(interaction.user.id), 'paypal'
-        )
-
-    if not metodo:
-        embed = discord.Embed(
-            title="💰 Métodos de Pago",
-            description="No tienes un método de pago configurado todavía.",
-            color=0xffa500
-        )
-        embed.add_field(
-            name="💡 Configurar Pagos",
-            value="Usa `/add-paypal` para agregar tu correo de PayPal.",
-            inline=False
-        )
-        await interaction.response.send_message(embed=embed, ephemeral=True)
-        return
-
-    embed = discord.Embed(
-        title="💳 Tus Detalles de Pago (PayPal)",
-        color=0x00ff00
-    )
-    embed.add_field(name="📧 Email", value=metodo['paypal_email'], inline=True)
-    embed.add_field(name="👤 Nombre", value=f"{metodo['first_name']} {metodo['last_name']}", inline=True)
-    embed.set_footer(text="Usa /add-paypal si deseas actualizar tu información")
-
-    await interaction.response.send_message(embed=embed, ephemeral=True)
-
-
-# =============================================
-# SISTEMA DE CAMPAÑAS (Active Campaigns)
-# =============================================
-from discord.ui import View, Button
-from datetime import datetime
-import os
-
-CAMPAIGNS_CHANNEL_ID = int(os.getenv("CAMPAIGNS_CHANNEL_ID", "0"))
-
-
-# ---------- /publish-campaign ----------
-@main_bot.tree.command(
-    name="publish-campaign",
-    description="Publica una nueva campaña en el canal de Active Campaigns"
-)
-@app_commands.describe(
-    nombre="Nombre de la campaña",
-    descripcion="Descripción de la campaña",
-    categoria="Categoría (Gaming, Gambling, Crypto, etc.)",
-    payrate="Ej: $5/1000 views, 20 USD per clip, etc.",
-    invite_link="Link de invitación del servidor",
-    thumbnail_url="Banner o imagen de la campaña (opcional)"
-)
-@app_commands.default_permissions(administrator=True)
-async def publish_campaign(
-    interaction: discord.Interaction,
-    nombre: str,
-    descripcion: str,
-    categoria: str,
-    payrate: str,
-    invite_link: str,
-    thumbnail_url: str = None
-):
-    print("📥 Ejecutando publish_campaign()")
-    try:
-        # -----------------------------------
-        # VALIDAR CANAL
-        # -----------------------------------
-        print(f"📌 CAMPAIGNS_CHANNEL_ID = {CAMPAIGNS_CHANNEL_ID}")
-
-        channel = interaction.client.get_channel(CAMPAIGNS_CHANNEL_ID)
-        print(f"🔎 Canal encontrado: {channel}")
-
-        if not channel:
-            await interaction.response.send_message(
-                "❌ No se encontró el canal de campañas. Verifica el ID.",
-                ephemeral=True
-            )
-            print("❌ ERROR: canal = None")
-            return
-
-        # -----------------------------------
-        # GUARDAR EN DATABASE
-        # -----------------------------------
-        print("💾 Guardando campaña en BD...")
-
-        async with main_bot.db_pool.acquire() as conn:
-            await conn.execute('''
-                INSERT INTO campaigns (name, description, category, payrate, invite_link, thumbnail_url, created_by)
-                VALUES ($1, $2, $3, $4, $5, $6, $7)
-            ''', nombre, descripcion, categoria, payrate, invite_link, thumbnail_url, str(interaction.user.id))
-
-        print("💾 Campaña guardada en BD.")
-
-        # -----------------------------------
-        # CREAR EMBED
-        # -----------------------------------
-        embed = discord.Embed(
-            title=f"🎯 {nombre}",
-            description=descripcion,
-            color=0x00ff00,
-            timestamp=datetime.now()
-        )
-        embed.add_field(name="🏷️ Categoría", value=categoria)
-        embed.add_field(name="💰 Payrate", value=payrate)
-        embed.add_field(name="📅 Fecha", value=datetime.now().strftime("%d/%m/%Y"))
-        embed.set_footer(text=f"Publicado por {interaction.user.display_name}")
-
-        if thumbnail_url:
-            embed.set_thumbnail(url=thumbnail_url)
-
-        # -----------------------------------
-        # ENVIAR MENSAJE
-        # -----------------------------------
-        print("📨 Enviando mensaje al canal...")
-
-        class JoinButton(View):
-            def __init__(self, link):
-                super().__init__()
-                self.add_item(Button(label="Join Server", style=discord.ButtonStyle.link, url=link))
-
-        await channel.send(embed=embed, view=JoinButton(invite_link))
-        print("📨 Mensaje enviado!")
-
-        # -----------------------------------
-        # RESPUESTA A DISCORD
-        # -----------------------------------
-        await interaction.response.send_message(
-            "✅ Campaña publicada correctamente.",
-            ephemeral=True
-        )
-        print("✅ Respuesta enviada a Discord.")
-
+                    await interaction.followup.send(f"❌ Error de comunicación con n8n (Status: {resp.status}).", ephemeral=True)
     except Exception as e:
-        print("❌ ERROR EN publish_campaign:", e)
-        try:
-            if not interaction.response.is_done():
-                await interaction.response.send_message(f"❌ Error interno: {e}", ephemeral=True)
-            else:
-                await interaction.followup.send(f"❌ Error interno: {e}", ephemeral=True)
-        except:
-            pass
+        await interaction.followup.send(f"❌ Error interno al verificar: {e}", ephemeral=True)
 
-
-# ---------- /edit-campaign ----------
-@main_bot.tree.command(name="edit-campaign", description="Edita una campaña existente por ID")
-@app_commands.describe(
-    id_campaña="ID de la campaña a editar",
-    nombre="Nuevo nombre (opcional)",
-    descripcion="Nueva descripción (opcional)",
-    payrate="Nuevo payrate (opcional)",
-    invite_link="Nuevo link de invitación (opcional)"
-)
-@app_commands.default_permissions(administrator=True)
-async def edit_campaign(
-    interaction: discord.Interaction,
-    id_campaña: int,
-    nombre: str = None,
-    descripcion: str = None,
-    payrate: str = None,
-    invite_link: str = None
-):
-    """Edita una campaña en la base de datos"""
-
-    async with main_bot.db_pool.acquire() as conn:
-        camp = await conn.fetchrow("SELECT * FROM campaigns WHERE id = $1", id_campaña)
-        if not camp:
-            await interaction.response.send_message("❌ No existe ninguna campaña con ese ID.", ephemeral=True)
-            return
-
-        new_name = nombre or camp["name"]
-        new_desc = descripcion or camp["description"]
-        new_rate = payrate or camp["payrate"]
-        new_link = invite_link or camp["invite_link"]
-
-        await conn.execute('''
-            UPDATE campaigns
-            SET name=$1, description=$2, payrate=$3, invite_link=$4
-            WHERE id=$5
-        ''', new_name, new_desc, new_rate, new_link, id_campaña)
-
-    embed = discord.Embed(
-        title="✅ Campaña Actualizada",
-        description=f"La campaña **{new_name}** fue editada exitosamente.",
-        color=0x00ff00
-    )
-    embed.add_field(name="💰 Payrate", value=new_rate, inline=True)
-    embed.add_field(name="🔗 Invite", value=new_link, inline=True)
-    await interaction.response.send_message(embed=embed, ephemeral=True)
-
-
-# ---------- /list-campaigns ----------
-@main_bot.tree.command(name="list-campaigns", description="Muestra todas las campañas activas")
-async def list_campaigns(interaction: discord.Interaction):
-    """Lista todas las campañas registradas"""
-
-    async with main_bot.db_pool.acquire() as conn:
-        campaigns = await conn.fetch("SELECT id, name, category, payrate, invite_link FROM campaigns ORDER BY created_at DESC")
-
-    if not campaigns:
-        await interaction.response.send_message("⚠️ No hay campañas activas registradas.", ephemeral=True)
-        return
-
-    embed = discord.Embed(
-        title="📢 Campañas Activas",
-        color=0x00ff00,
-        timestamp=datetime.now()
-    )
-
-    for camp in campaigns:
-        embed.add_field(
-            name=f"🎯 {camp['name']} (ID: {camp['id']})",
-            value=f"**Categoría:** {camp['category']}\n**Payrate:** {camp['payrate']}\n[Join Server]({camp['invite_link']})",
-            inline=False
-        )
-
-    embed.set_footer(text="Usa /publish-campaign para agregar una nueva")
-    await interaction.response.send_message(embed=embed, ephemeral=True)
-
-# ---------- /mis-videos ----------
-@main_bot.tree.command(name="mis-videos", description="Muestra tus videos trackeados y sus métricas")
+# =============================================
+# COMANDO: MIS VIDEOS (Muestra YT + TikTok)
+# =============================================
+@main_bot.tree.command(name="mis-videos", description="Muestra tus videos trackeados")
 async def mis_videos(interaction: discord.Interaction):
-    """Muestra videos de YouTube y TikTok combinados"""
-    
-    discord_id = str(interaction.user.id)
-    
+    discord_id = str(interaction.user.id) # ⚠️ ID como String
+
     async with main_bot.db_pool.acquire() as conn:
-        # 1. Traer videos de YouTube
-        yt_videos = await conn.fetch(
-            '''
+        # YouTube
+        yt = await conn.fetch('''
             SELECT post_url as url, views, likes, shares, uploaded_at, 'YouTube' as platform
-            FROM tracked_posts
-            WHERE discord_id = $1
-            ''',
-            discord_id
-        )
+            FROM tracked_posts WHERE discord_id = $1
+        ''', discord_id)
 
-        # 2. Traer videos de TikTok
-        tt_videos = await conn.fetch(
-            '''
+        # TikTok
+        tt = await conn.fetch('''
             SELECT tiktok_url as url, views, likes, shares, uploaded_at, 'TikTok' as platform
-            FROM tracked_posts_tiktok
-            WHERE discord_id = $1
-            ''',
-            discord_id
-        )
+            FROM tracked_posts_tiktok WHERE discord_id = $1
+        ''', discord_id)
 
-    # 3. Combinar y ordenar por fecha (más reciente primero)
-    # Convertimos los registros a diccionarios para poder manipularlos si es necesario
-    all_videos = [dict(v) for v in yt_videos] + [dict(v) for v in tt_videos]
-    all_videos.sort(key=lambda x: x['uploaded_at'], reverse=True)
+    # Combinar resultados
+    all_videos = [dict(v) for v in yt] + [dict(v) for v in tt]
+    
+    # Ordenar por fecha (manejar casos donde uploaded_at sea None)
+    all_videos.sort(key=lambda x: x['uploaded_at'] or datetime.min, reverse=True)
 
     if not all_videos:
-        embed = discord.Embed(
-            title="🎬 Tus Videos Trackeados",
-            description="Todavía no hay videos registrados para tu cuenta en ninguna plataforma.",
-            color=0xffa500
-        )
-        embed.set_footer(text="Los videos aparecen automáticamente cada 6 horas.")
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        await interaction.response.send_message("📭 No tienes videos registrados aún. Recuerda que se actualizan cada 6 horas.", ephemeral=True)
         return
 
-    # 4. Mostrar resultados (Paginación simple: mostramos los últimos 10)
-    embed = discord.Embed(
-        title="🎬 Tus Videos Trackeados",
-        description=f"Mostrando los últimos {min(len(all_videos), 10)} de {len(all_videos)} videos",
-        color=0x00ff00
-    )
-
+    embed = discord.Embed(title="🎬 Mis Videos Trackeados", color=0x9146FF)
+    
+    # Mostrar solo los 10 más recientes
     for v in all_videos[:10]:
-        # Elegir emoji según plataforma
         emoji = "▶️" if v['platform'] == 'YouTube' else "🎵"
-        
         embed.add_field(
             name=f"{emoji} {v['platform']}",
-            value=(
-                f"🔗 [Ver Video]({v['url']})\n"
-                f"👁️ **Vistas:** {v['views']:,}\n"
-                f"❤️ **Likes:** {v['likes']:,}\n"
-                f"📅 **Fecha:** {v['uploaded_at'].strftime('%d/%m %H:%M')}"
-            ),
+            value=f"[Link]({v['url']})\n👁️ {v['views'] or 0} | ❤️ {v['likes'] or 0}",
             inline=False
         )
+    
+    if len(all_videos) > 10:
+        embed.set_footer(text=f"Mostrando 10 de {len(all_videos)} videos totales.")
 
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
-   # ---------- /set-bounty ----------
+# =============================================
+# COMANDO: INFO (Estadísticas Totales)
+# =============================================
+@main_bot.tree.command(name="info", description="Estadísticas del bot")
+async def info(interaction: discord.Interaction):
+    async with main_bot.db_pool.acquire() as conn:
+        users = await conn.fetchval('SELECT COUNT(*) FROM users')
+        
+        # Sumar posts de ambas tablas
+        yt_count = await conn.fetchval('SELECT COUNT(*) FROM tracked_posts')
+        tt_count = await conn.fetchval('SELECT COUNT(*) FROM tracked_posts_tiktok')
+        total_posts = (yt_count or 0) + (tt_count or 0)
 
-@main_bot.tree.command(name="set-bounty", description="Asigna un bounty/campaña a un video ya trackeado")
-@app_commands.describe(
-    plataforma="youtube o tiktok",
-    post_url="URL del video",
-    bounty_tag="Nombre o identificador de la campaña"
-)
+        # Sumar views de ambas tablas
+        yt_views = await conn.fetchval('SELECT COALESCE(SUM(views), 0) FROM tracked_posts')
+        tt_views = await conn.fetchval('SELECT COALESCE(SUM(views), 0) FROM tracked_posts_tiktok')
+        total_views = (yt_views or 0) + (tt_views or 0)
+
+    embed = discord.Embed(title="📊 Estadísticas del Bot", color=0x00ff00)
+    embed.add_field(name="👥 Usuarios", value=str(users), inline=True)
+    embed.add_field(name="🎬 Videos Trackeados", value=str(total_posts), inline=True)
+    embed.add_field(name="👁️ Vistas Totales", value=f"{total_views:,}", inline=True)
+    
+    await interaction.response.send_message(embed=embed)
+
+# =============================================
+# COMANDO: SET BOUNTY (Manual)
+# =============================================
+@main_bot.tree.command(name="set-bounty", description="Activa campaña en un video")
+@app_commands.describe(plataforma="youtube o tiktok", post_url="URL del video", bounty_tag="Tag de campaña")
 @app_commands.default_permissions(administrator=True)
 async def set_bounty(interaction: discord.Interaction, plataforma: str, post_url: str, bounty_tag: str):
-    """Activa una campaña sobre un video trackeado"""
-
     plataforma = plataforma.lower()
-
     if plataforma not in ["youtube", "tiktok"]:
-        await interaction.response.send_message("❌ Plataforma inválida. Usa youtube o tiktok.", ephemeral=True)
+        await interaction.response.send_message("❌ Plataforma inválida.", ephemeral=True)
         return
 
     table = "tracked_posts" if plataforma == "youtube" else "tracked_posts_tiktok"
+    url_col = "post_url" if plataforma == "youtube" else "tiktok_url"
 
     async with main_bot.db_pool.acquire() as conn:
-        # Buscar el post
-        post = await conn.fetchrow(
-            f"SELECT * FROM {table} WHERE post_url = $1",
-            post_url
-        )
-
-        if not post:
-            await interaction.response.send_message(
-                f"❌ No se encontró el post en `{table}`.\nAsegúrate de que el video esté registrado.",
-                ephemeral=True
-            )
+        # Verificar si existe
+        exists = await conn.fetchval(f"SELECT 1 FROM {table} WHERE {url_col} = $1", post_url)
+        if not exists:
+            await interaction.response.send_message(f"❌ El video no está en la base de datos ({table}). Asegúrate de que el scraper ya lo haya detectado.", ephemeral=True)
             return
 
-        # Actualizar como bounty + guardar baseline de views
-        await conn.execute(
-            f'''
+        # Activar bounty
+        await conn.execute(f'''
             UPDATE {table}
-            SET is_bounty = TRUE,
-                bounty_tag = $1,
-                starting_views = views,
-                final_earned_usd = 0
-            WHERE post_url = $2
-            ''',
-            bounty_tag, post_url
-        )
+            SET is_bounty = TRUE, bounty_tag = $1, starting_views = views, final_earned_usd = 0
+            WHERE {url_col} = $2
+        ''', bounty_tag, post_url)
 
-    embed = discord.Embed(
-        title="🎯 Bounty Activado",
-        description=f"El video ahora está participando en la campaña **{bounty_tag}**",
-        color=0x00ff00
-    )
+    await interaction.response.send_message(f"✅ Bounty **{bounty_tag}** activado para el video.")
 
-    embed.add_field(name="🔗 Video", value=post_url, inline=False)
-    embed.add_field(name="🏷️ Campaña", value=bounty_tag, inline=True)
-    embed.add_field(name="📌 Plataforma", value=plataforma, inline=True)
+# =============================================
+# COMANDOS DE PAGO Y UTILIDADES (Sin cambios mayores)
+# =============================================
 
-    await interaction.response.send_message(embed=embed)
-
-# ---------- /mis-bounties ----------
-
-@main_bot.tree.command(name="mis-bounties", description="Muestra tus videos que están participando en campañas/bounties")
-async def mis_bounties(interaction: discord.Interaction):
-    discord_id = str(interaction.user.id)
-
-    async with main_bot.db_pool.acquire() as conn:
-        yt = await conn.fetch(
-            '''
-            SELECT post_url, views, likes, shares, uploaded_at, bounty_tag
-            FROM tracked_posts
-            WHERE discord_id = $1 AND is_bounty = TRUE
-            ORDER BY uploaded_at DESC
-            ''',
-            discord_id
-        )
-
-        tt = await conn.fetch(
-            '''
-            SELECT tiktok_url AS post_url, views, likes, shares, uploaded_at, bounty_tag
-            FROM tracked_posts_tiktok
-            WHERE discord_id = $1 AND is_bounty = TRUE
-            ORDER BY uploaded_at DESC
-            ''',
-            discord_id
-        )
-
-    videos = yt + tt
-
-    if not videos:
-        await interaction.response.send_message(
-            "📭 No tienes videos participando en campañas todavía.",
-            ephemeral=True
-        )
+@main_bot.tree.command(name="add-paypal", description="Configura tu PayPal")
+async def add_paypal(interaction: discord.Interaction, email: str, nombre: str, apellido: str):
+    if not re.match(r"[^@]+@[^@]+\.[^@]+", email):
+        await interaction.response.send_message("❌ Email inválido.", ephemeral=True)
         return
 
-    embed = discord.Embed(
-        title="🎯 Tus Videos en Campañas",
-        description=f"Tienes **{len(videos)}** videos activos en bounties.",
-        color=0x00ff00
-    )
-
-    for v in videos:
-        embed.add_field(
-            name=f"🏷️ Campaña: {v['bounty_tag']}",
-            value=(
-                f"🔗 **Video:** {v['post_url']}\n"
-                f"👁️ **Views:** {v['views']}\n"
-                f"❤️ **Likes:** {v['likes']}\n"
-                f"🔄 **Shares:** {v['shares']}\n"
-                f"📅 **Trackeado desde:** {v['uploaded_at'].strftime('%d/%m/%Y %H:%M')}"
-            ),
-            inline=False
-        )
-
-    await interaction.response.send_message(embed=embed, ephemeral=True)
-
-# ---------- /set-bounty-rate ----------
-
-@main_bot.tree.command(name="set-bounty-rate", description="Configura el pago por views de una campaña")
-@app_commands.describe(
-    bounty_tag="Identificador de la campaña",
-    amount_usd="USD que paga",
-    per_views="Cada cuántas views"
-)
-@app_commands.default_permissions(administrator=True)
-async def set_bounty_rate(interaction: discord.Interaction, bounty_tag: str, amount_usd: float, per_views: int):
-
+    discord_id = str(interaction.user.id)
     async with main_bot.db_pool.acquire() as conn:
+        await conn.execute('INSERT INTO users (discord_id, username) VALUES ($1, $2) ON CONFLICT (discord_id) DO NOTHING', discord_id, str(interaction.user))
         await conn.execute('''
-            CREATE TABLE IF NOT EXISTS bounty_rates (
-                id SERIAL PRIMARY KEY,
-                bounty_tag TEXT UNIQUE,
-                amount_usd NUMERIC,
-                per_views INT
-            )
-        ''')
+            INSERT INTO payment_methods (discord_id, method_type, paypal_email, first_name, last_name)
+            VALUES ($1, 'paypal', $2, $3, $4)
+            ON CONFLICT (discord_id, method_type) DO UPDATE SET paypal_email = $2, first_name = $3, last_name = $4
+        ''', discord_id, email, nombre, apellido)
+    await interaction.response.send_message("✅ PayPal guardado exitosamente.", ephemeral=True)
 
-        await conn.execute('''
-            INSERT INTO bounty_rates (bounty_tag, amount_usd, per_views)
-            VALUES ($1, $2, $3)
-            ON CONFLICT (bounty_tag)
-            DO UPDATE SET amount_usd = EXCLUDED.amount_usd, per_views = EXCLUDED.per_views
-        ''', bounty_tag, amount_usd, per_views)
+@main_bot.tree.command(name="payment-details", description="Ver tus datos de pago")
+async def payment_details(interaction: discord.Interaction):
+    discord_id = str(interaction.user.id)
+    async with main_bot.db_pool.acquire() as conn:
+        data = await conn.fetchrow('SELECT * FROM payment_methods WHERE discord_id = $1 AND method_type = $2', discord_id, 'paypal')
+    
+    if data:
+        await interaction.response.send_message(f"📧 PayPal: {data['paypal_email']} ({data['first_name']} {data['last_name']})", ephemeral=True)
+    else:
+        await interaction.response.send_message("❌ No has configurado PayPal.", ephemeral=True)
 
-    embed = discord.Embed(
-        title="💰 Payrate Configurado",
-        description=f"La campaña **{bounty_tag}** paga **${amount_usd} cada {per_views} views**.",
-        color=0x00ff00
-    )
-    await interaction.response.send_message(embed=embed)
-
+@main_bot.tree.command(name="sync", description="Sincronizar comandos (Admin)")
+@app_commands.default_permissions(administrator=True)
+async def sync(interaction: discord.Interaction):
+    await interaction.response.defer(ephemeral=True)
+    try:
+        synced = await main_bot.tree.sync()
+        await interaction.followup.send(f"✅ Sincronizados {len(synced)} comandos.")
+    except Exception as e:
+        await interaction.followup.send(f"❌ Error: {e}")
 
 # =============================================
-# EJECUCIÓN DEL BOT PRINCIPAL
+# EJECUCIÓN
 # =============================================
-
 if __name__ == "__main__":
     token = os.getenv('DISCORD_MAIN_BOT_TOKEN')
     if not token:
-        print("❌ ERROR: DISCORD_MAIN_BOT_TOKEN no encontrado en las variables de entorno")
+        print("❌ ERROR: Falta TOKEN")
         exit(1)
-    
     main_bot.run(token)
