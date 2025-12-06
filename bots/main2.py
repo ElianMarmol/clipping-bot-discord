@@ -410,14 +410,14 @@ async def crear_anuncio(
 # 5. COMANDO: REMOVER CUENTA
 # =============================================
 
-@admin_bot.tree.command(name="remover-cuenta", description="Remover una cuenta del sistema")
+@admin_bot.tree.command(name="remover-cuenta", description="Remover completamente una cuenta y sus datos")
 @app_commands.describe(
     usuario="Usuario de Discord",
-    plataforma="Plataforma de la cuenta a remover",
+    plataforma="Plataforma a limpiar",
     nombre_usuario="Nombre de usuario específico (opcional)"
 )
 @app_commands.choices(plataforma=[
-    app_commands.Choice(name="Todas las plataformas", value="all"),
+    app_commands.Choice(name="Todas las plataformas (Borrado Total)", value="all"),
     app_commands.Choice(name="Twitter/X", value="twitter"),
     app_commands.Choice(name="Instagram", value="instagram"),
     app_commands.Choice(name="TikTok", value="tiktok"),
@@ -431,80 +431,71 @@ async def remover_cuenta(
     plataforma: str,
     nombre_usuario: str = None
 ):
-    """Remueve cuentas sociales del sistema"""
+    """Remueve cuentas sociales, videos y métricas del sistema"""
     
-    # ⚠️ Convertir ID a string
+    await interaction.response.defer(ephemeral=True)
     discord_id_str = str(usuario.id)
 
     async with admin_bot.db_pool.acquire() as conn:
-        if plataforma == "all":
-            # Remover todas las cuentas del usuario
-            result = await conn.execute(
-                'DELETE FROM social_accounts WHERE discord_id = $1',
-                discord_id_str
-            )
-            
-            if result == "DELETE 0":
-                await interaction.response.send_message(
-                    f"❌ {usuario.mention} no tiene cuentas registradas en el sistema.",
-                    ephemeral=True
-                )
-                return
-            
-            embed = discord.Embed(
-                title="✅ Todas las Cuentas Removidas",
-                description=f"Todas las cuentas de {usuario.mention} han sido removidas del sistema.",
-                color=0x00ff00
-            )
-            
-        else:
-            # Remover cuenta específica
-            if nombre_usuario:
-                result = await conn.execute(
-                    'DELETE FROM social_accounts WHERE discord_id = $1 AND platform = $2 AND username = $3',
-                    discord_id_str, plataforma, nombre_usuario
-                )
+        try:
+            if plataforma == "all":
+                # 1. Borrar VIDEOS (Métricas) de todas las tablas
+                deleted_yt = await conn.execute("DELETE FROM tracked_posts WHERE discord_id = $1", discord_id_str)
+                deleted_tt = await conn.execute("DELETE FROM tracked_posts_tiktok WHERE discord_id = $1", discord_id_str)
                 
-                if result == "DELETE 0":
-                    await interaction.response.send_message(
-                        f"❌ No se encontró la cuenta {nombre_usuario} en {plataforma} para {usuario.mention}.",
-                        ephemeral=True
-                    )
+                # 2. Borrar Cuentas Sociales
+                deleted_social = await conn.execute("DELETE FROM social_accounts WHERE discord_id = $1", discord_id_str)
+                
+                # 3. Borrar Métodos de Pago
+                await conn.execute("DELETE FROM payment_methods WHERE discord_id = $1", discord_id_str)
+                
+                # 4. Borrar Usuario de la tabla principal (Esto baja el contador de Usuarios Registrados)
+                deleted_user = await conn.execute("DELETE FROM users WHERE discord_id = $1", discord_id_str)
+
+                if deleted_social == "DELETE 0" and deleted_user == "DELETE 0":
+                    await interaction.followup.send(f"❌ {usuario.mention} no tiene datos registrados.", ephemeral=True)
                     return
-                
-                embed = discord.Embed(
-                    title="✅ Cuenta Específica Removida",
-                    description=f"Cuenta `{nombre_usuario}` en **{plataforma}** ha sido removida de {usuario.mention}.",
-                    color=0x00ff00
-                )
-                
+
+                embed = discord.Embed(title="🗑️ Limpieza Completa Exitosa", color=0x00ff00)
+                embed.description = f"Se han eliminado todos los registros de {usuario.mention}."
+                embed.add_field(name="Videos Eliminados", value=f"YouTube: {deleted_yt}\nTikTok: {deleted_tt}", inline=True)
+                embed.add_field(name="Cuentas Desvinculadas", value=deleted_social.replace("DELETE ", ""), inline=True)
+
             else:
-                # Remover todas las cuentas de una plataforma
-                result = await conn.execute(
-                    'DELETE FROM social_accounts WHERE discord_id = $1 AND platform = $2',
-                    discord_id_str, plataforma
-                )
+                # Borrado específico por plataforma
+                if plataforma == "youtube":
+                    # Si borramos YouTube, borramos sus videos también
+                    await conn.execute("DELETE FROM tracked_posts WHERE discord_id = $1", discord_id_str)
                 
-                if result == "DELETE 0":
-                    await interaction.response.send_message(
-                        f"❌ {usuario.mention} no tiene cuentas en {plataforma}.",
-                        ephemeral=True
+                elif plataforma == "tiktok":
+                    # Si borramos TikTok, borramos sus videos también
+                    await conn.execute("DELETE FROM tracked_posts_tiktok WHERE discord_id = $1", discord_id_str)
+
+                # Borrar la vinculación social
+                if nombre_usuario:
+                    result = await conn.execute(
+                        'DELETE FROM social_accounts WHERE discord_id = $1 AND platform = $2 AND username = $3',
+                        discord_id_str, plataforma, nombre_usuario
                     )
+                else:
+                    result = await conn.execute(
+                        'DELETE FROM social_accounts WHERE discord_id = $1 AND platform = $2',
+                        discord_id_str, plataforma
+                    )
+
+                if result == "DELETE 0":
+                    await interaction.followup.send(f"❌ No se encontraron cuentas de **{plataforma}** para ese usuario.", ephemeral=True)
                     return
-                
-                embed = discord.Embed(
-                    title="✅ Cuentas de Plataforma Removidas",
-                    description=f"Todas las cuentas de **{plataforma}** han sido removidas de {usuario.mention}.",
-                    color=0x00ff00
-                )
-        
-        embed.add_field(name="👤 Usuario", value=usuario.mention, inline=True)
-        embed.add_field(name="👨‍💼 Acción por", value=interaction.user.mention, inline=True)
-        embed.add_field(name="🕒 Fecha", value=datetime.now().strftime("%Y-%m-%d %H:%M"), inline=True)
-        
-        embed.set_footer(text="Esta acción no se puede deshacer")
-    
-    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+                embed = discord.Embed(title="✅ Cuenta Removida", color=0x00ff00)
+                embed.description = f"Se han eliminado las cuentas y videos de **{plataforma}** para {usuario.mention}."
+
+            embed.set_footer(text=f"Admin: {interaction.user.name} • Acción irreversible")
+            await interaction.followup.send(embed=embed, ephemeral=True)
+
+        except Exception as e:
+            print(f"❌ Error borrando cuenta: {e}")
+            await interaction.followup.send(f"❌ Error interno al borrar: {e}", ephemeral=True)
 
 # =============================================
 # COMANDO SYNC PARA ADMIN BOT
