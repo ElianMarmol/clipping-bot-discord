@@ -1321,41 +1321,64 @@ async def list_campaigns(interaction: discord.Interaction):
 # ---------- /mis-videos ----------
 @main_bot.tree.command(name="mis-videos", description="Muestra tus videos trackeados y sus métricas")
 async def mis_videos(interaction: discord.Interaction):
+    """Muestra videos de YouTube y TikTok combinados"""
+    
+    discord_id = str(interaction.user.id)
+    
     async with main_bot.db_pool.acquire() as conn:
-        videos = await conn.fetch(
+        # 1. Traer videos de YouTube
+        yt_videos = await conn.fetch(
             '''
-            SELECT post_url, views, likes, shares, uploaded_at
+            SELECT post_url as url, views, likes, shares, uploaded_at, 'YouTube' as platform
             FROM tracked_posts
             WHERE discord_id = $1
-            ORDER BY uploaded_at DESC
             ''',
-            str(interaction.user.id)
+            discord_id
         )
 
-    if not videos:
+        # 2. Traer videos de TikTok
+        tt_videos = await conn.fetch(
+            '''
+            SELECT tiktok_url as url, views, likes, shares, uploaded_at, 'TikTok' as platform
+            FROM tracked_posts_tiktok
+            WHERE discord_id = $1
+            ''',
+            discord_id
+        )
+
+    # 3. Combinar y ordenar por fecha (más reciente primero)
+    # Convertimos los registros a diccionarios para poder manipularlos si es necesario
+    all_videos = [dict(v) for v in yt_videos] + [dict(v) for v in tt_videos]
+    all_videos.sort(key=lambda x: x['uploaded_at'], reverse=True)
+
+    if not all_videos:
         embed = discord.Embed(
             title="🎬 Tus Videos Trackeados",
-            description="Todavía no hay videos registrados para tu cuenta.",
+            description="Todavía no hay videos registrados para tu cuenta en ninguna plataforma.",
             color=0xffa500
         )
-        embed.set_footer(text="Los videos aparecen cuando n8n termina de procesarlos.")
+        embed.set_footer(text="Los videos aparecen automáticamente cada 6 horas.")
         await interaction.response.send_message(embed=embed, ephemeral=True)
         return
 
+    # 4. Mostrar resultados (Paginación simple: mostramos los últimos 10)
     embed = discord.Embed(
         title="🎬 Tus Videos Trackeados",
-        description=f"Total: **{len(videos)}** videos",
+        description=f"Mostrando los últimos {min(len(all_videos), 10)} de {len(all_videos)} videos",
         color=0x00ff00
     )
 
-    for v in videos:
+    for v in all_videos[:10]:
+        # Elegir emoji según plataforma
+        emoji = "▶️" if v['platform'] == 'YouTube' else "🎵"
+        
         embed.add_field(
-            name=v['post_url'],
+            name=f"{emoji} {v['platform']}",
             value=(
-                f"👁️ **Vistas:** {v['views']}\n"
-                f"❤️ **Likes:** {v['likes']}\n"
-                f"🔄 **Shares:** {v['shares']}\n"
-                f"📅 **Guardado:** {v['uploaded_at'].strftime('%d/%m/%Y %H:%M')}"
+                f"🔗 [Ver Video]({v['url']})\n"
+                f"👁️ **Vistas:** {v['views']:,}\n"
+                f"❤️ **Likes:** {v['likes']:,}\n"
+                f"📅 **Fecha:** {v['uploaded_at'].strftime('%d/%m %H:%M')}"
             ),
             inline=False
         )
