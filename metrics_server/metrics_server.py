@@ -57,17 +57,18 @@ async def get_active_users(platform: str):
 # ---------------------------------------------------------
 @app.post("/metrics/ingest")
 async def save_metrics(payload: MetricsPayload):
+    """Guarda o actualiza métricas recibidas de n8n"""
     print(f"📩 Métricas recibidas para {payload.platform} ({len(payload.videos)} videos)")
     
     table_name = "tracked_posts" if payload.platform == "youtube" else "tracked_posts_tiktok"
-    # Ajuste de nombre de columna según tu tabla
     url_col = "post_url" if payload.platform == "youtube" else "tiktok_url"
 
     async with app.db_pool.acquire() as conn:
         for v in payload.videos:
+            # ⚠️ CORRECCIÓN: Agregamos 'video_id' al INSERT y a los VALUES
             await conn.execute(f'''
-                INSERT INTO {table_name} (discord_id, {url_col}, views, likes, shares)
-                VALUES ($1, $2, $3, $4, $5)
+                INSERT INTO {table_name} (discord_id, {url_col}, video_id, views, likes, shares)
+                VALUES ($1, $2, $3, $4, $5, $6)
                 ON CONFLICT (discord_id, {url_col})
                 DO UPDATE SET 
                     views = EXCLUDED.views,
@@ -76,6 +77,7 @@ async def save_metrics(payload: MetricsPayload):
             ''',
                 str(payload.discord_id),
                 v.url,
+                v.video_id,  # <--- AHORA SÍ ENVIAMOS EL ID DEL VIDEO
                 v.views,
                 v.likes,
                 v.shares
