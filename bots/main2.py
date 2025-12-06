@@ -40,17 +40,19 @@ class AdminBot(commands.Bot):
         # LIMPIEZA DE COMANDOS SOLO DEL ADMIN BOT
         # ===============================
         try:
-            guild_id = int(os.getenv("DISCORD_GUILD_ID"))
-            admin_bot_id = int(os.getenv("DISCORD_ADMIN_BOT_ID"))
+            guild_id_str = os.getenv("DISCORD_GUILD_ID")
+            if guild_id_str:
+                guild_id = int(guild_id_str)
+                print("🧹 Limpiando comandos del AdminBot...")
 
-            print("🧹 Limpiando comandos del AdminBot...")
-
-            guild = self.get_guild(guild_id)
-            if guild:
-                synced = await self.tree.sync(guild=guild)
-                print(f"🔄 Comandos del AdminBot sincronizados en guild: {len(synced)}")
+                guild = self.get_guild(guild_id)
+                if guild:
+                    synced = await self.tree.sync(guild=guild)
+                    print(f"🔄 Comandos del AdminBot sincronizados en guild: {len(synced)}")
+                else:
+                    print("⚠️ AdminBot aún no está en el servidor (Guild no encontrada en cache).")
             else:
-                print("⚠️ AdminBot aún no está en el servidor.")
+                print("⚠️ DISCORD_GUILD_ID no configurado.")
 
         except Exception as e:
             print(f"❌ Error en setup_hook (admin bot): {e}")
@@ -59,6 +61,7 @@ class AdminBot(commands.Bot):
 
     async def create_tables(self):
         async with self.db_pool.acquire() as conn:
+            # Backup: created_by ahora es TEXT para coincidir con la tabla users
             await conn.execute('''
                 CREATE TABLE IF NOT EXISTS server_backups (
                     id SERIAL PRIMARY KEY,
@@ -66,11 +69,12 @@ class AdminBot(commands.Bot):
                     backup_name TEXT,
                     member_count INTEGER,
                     backup_data JSONB,
-                    created_by BIGINT,
+                    created_by TEXT, 
                     created_at TIMESTAMP DEFAULT NOW()
                 )
             ''')
 
+            # Anuncios: created_by ahora es TEXT
             await conn.execute('''
                 CREATE TABLE IF NOT EXISTS announcements (
                     id SERIAL PRIMARY KEY,
@@ -78,12 +82,12 @@ class AdminBot(commands.Bot):
                     title TEXT,
                     message TEXT,
                     channel_id BIGINT,
-                    created_by BIGINT,
+                    created_by TEXT,
                     created_at TIMESTAMP DEFAULT NOW()
                 )
             ''')
 
-            print("✅ Tablas de administración creadas")
+            print("✅ Tablas de administración verificadas")
 
     async def on_ready(self):
         self.start_time = datetime.now()
@@ -146,7 +150,9 @@ async def encontrar_usuario(interaction: discord.Interaction, plataforma: str, n
     
     for i, usuario in enumerate(usuarios[:10], 1):  # Mostrar máximo 10 resultados
         try:
-            user = await interaction.guild.fetch_member(usuario['discord_id'])
+            # Convertimos a int para discord.py, ya que viene como str de la DB
+            user_id_int = int(usuario['discord_id'])
+            user = await interaction.guild.fetch_member(user_id_int)
             user_mention = user.mention
         except:
             user_mention = f"`{usuario['username']}` (No en el servidor)"
@@ -187,13 +193,14 @@ async def backup_servidor(interaction: discord.Interaction, nombre_backup: str =
                 total_miembros += 1
                 
                 # Obtener cuentas sociales del miembro
+                # ⚠️ IMPORTANTE: Casting de member.id (int) a str para la DB
                 cuentas_sociales = await conn.fetch(
                     'SELECT platform, username, is_verified FROM social_accounts WHERE discord_id = $1',
-                    member.id
+                    str(member.id)
                 )
                 
                 miembro_info = {
-                    'discord_id': member.id,
+                    'discord_id': str(member.id),
                     'username': str(member),
                     'joined_at': member.joined_at.isoformat() if member.joined_at else None,
                     'cuentas_sociales': [
@@ -218,7 +225,11 @@ async def backup_servidor(interaction: discord.Interaction, nombre_backup: str =
             INSERT INTO server_backups (guild_id, backup_name, member_count, backup_data, created_by)
             VALUES ($1, $2, $3, $4, $5)
             ''',
-            interaction.guild.id, backup_name, total_miembros, json.dumps(miembros_data), interaction.user.id
+            interaction.guild.id, 
+            backup_name, 
+            total_miembros, 
+            json.dumps(miembros_data), 
+            str(interaction.user.id) # ⚠️ Casting a str
         )
     
     # Crear embed de resultados
@@ -279,9 +290,10 @@ async def verificar_ban(interaction: discord.Interaction, usuario: discord.User)
         
         # Intentar obtener información adicional de la base de datos
         async with admin_bot.db_pool.acquire() as conn:
+            # ⚠️ Casting a str para la consulta
             user_data = await conn.fetchrow(
                 'SELECT username, created_at FROM users WHERE discord_id = $1',
-                usuario.id
+                str(usuario.id)
             )
             
             if user_data:
@@ -362,12 +374,13 @@ async def crear_anuncio(
         
         # Guardar en base de datos
         async with admin_bot.db_pool.acquire() as conn:
+            # ⚠️ created_by como str
             await conn.execute(
                 '''
                 INSERT INTO announcements (guild_id, title, message, channel_id, created_by)
                 VALUES ($1, $2, $3, $4, $5)
                 ''',
-                interaction.guild.id, titulo, mensaje, canal.id, interaction.user.id
+                interaction.guild.id, titulo, mensaje, canal.id, str(interaction.user.id)
             )
         
         # Embed de confirmación
@@ -420,12 +433,15 @@ async def remover_cuenta(
 ):
     """Remueve cuentas sociales del sistema"""
     
+    # ⚠️ Convertir ID a string
+    discord_id_str = str(usuario.id)
+
     async with admin_bot.db_pool.acquire() as conn:
         if plataforma == "all":
             # Remover todas las cuentas del usuario
             result = await conn.execute(
                 'DELETE FROM social_accounts WHERE discord_id = $1',
-                usuario.id
+                discord_id_str
             )
             
             if result == "DELETE 0":
@@ -446,7 +462,7 @@ async def remover_cuenta(
             if nombre_usuario:
                 result = await conn.execute(
                     'DELETE FROM social_accounts WHERE discord_id = $1 AND platform = $2 AND username = $3',
-                    usuario.id, plataforma, nombre_usuario
+                    discord_id_str, plataforma, nombre_usuario
                 )
                 
                 if result == "DELETE 0":
@@ -466,7 +482,7 @@ async def remover_cuenta(
                 # Remover todas las cuentas de una plataforma
                 result = await conn.execute(
                     'DELETE FROM social_accounts WHERE discord_id = $1 AND platform = $2',
-                    usuario.id, plataforma
+                    discord_id_str, plataforma
                 )
                 
                 if result == "DELETE 0":
@@ -497,9 +513,12 @@ async def remover_cuenta(
 @admin_bot.tree.command(name="sync-admin", description="Sincronizar comandos del bot de administración")
 async def sync_admin(interaction: discord.Interaction):
     """Comando temporal para sincronizar comandos slash del admin bot"""
-    TU_USER_ID = 551092070136283136  # ⬅️ CAMBIA ESTO POR TU ID
     
-    if interaction.user.id != TU_USER_ID:
+    # Intenta obtener el ID del owner de las variables de entorno, si no, usa el tuyo por defecto
+    owner_id_env = os.getenv("DISCORD_OWNER_ID")
+    owner_id = int(owner_id_env) if owner_id_env else 551092070136283136 # ⬅️ Fallback a tu ID original
+    
+    if interaction.user.id != owner_id:
         await interaction.response.send_message("❌ Solo el owner puede usar este comando.", ephemeral=True)
         return
     
