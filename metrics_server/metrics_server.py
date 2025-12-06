@@ -14,12 +14,12 @@ class MetricItem(BaseModel):
     url: str  # URL completa del post
 
 class MetricsPayload(BaseModel):
-    discord_id: int
+    discord_id: str
     platform: str  # 'youtube' o 'tiktok'
     videos: List[MetricItem]
 
 class VerificationPayload(BaseModel):
-    discord_id: int
+    discord_id: str
     platform: str
     is_verified: bool
 
@@ -57,10 +57,10 @@ async def get_active_users(platform: str):
 # ---------------------------------------------------------
 @app.post("/metrics/ingest")
 async def save_metrics(payload: MetricsPayload):
-    """Guarda o actualiza métricas recibidas de n8n"""
     print(f"📩 Métricas recibidas para {payload.platform} ({len(payload.videos)} videos)")
     
     table_name = "tracked_posts" if payload.platform == "youtube" else "tracked_posts_tiktok"
+    # Ajuste de nombre de columna según tu tabla
     url_col = "post_url" if payload.platform == "youtube" else "tiktok_url"
 
     async with app.db_pool.acquire() as conn:
@@ -74,7 +74,7 @@ async def save_metrics(payload: MetricsPayload):
                     likes = EXCLUDED.likes,
                     shares = EXCLUDED.shares
             ''',
-                payload.discord_id,
+                str(payload.discord_id),
                 v.url,
                 v.views,
                 v.likes,
