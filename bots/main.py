@@ -220,7 +220,7 @@ main_bot = MainBot()
 # COMANDOS DE CAMPAÑAS (RESTAURADOS)
 # =============================================
 
-@main_bot.tree.command(name="publish-campaign", description="Publicar campaña (Letras Grandes)")
+@main_bot.tree.command(name="publicar-campaña", description="Publicar campaña (Letras Grandes)")
 @app_commands.default_permissions(administrator=True)
 @app_commands.describe(
     nombre="Nombre de la campaña (ej: Alix Earle)",
@@ -253,7 +253,7 @@ async def publish_campaign(interaction: discord.Interaction,
     
     # 2. Embed con Títulos Grandes (Markdown ##)
     embed = discord.Embed(
-        title=f"{nombre} x Clipping", 
+        title=f"{nombre} x Latin Clipping", 
         description=f"### {descripcion} 🔥",  # Usamos ### para hacerlo un poco más grande
         color=0x00ff00
     )
@@ -264,7 +264,7 @@ async def publish_campaign(interaction: discord.Interaction,
     # --- SECCIÓN 1: DETALLES ---
     # Truco: name="\u200b" (invisible), y ponemos el Título con "##" dentro del value
     detalles_texto = (
-        "## Detalles de la Campaña 🚀\n"  # <--- AQUÍ ESTÁ EL TRUCO (Letra Grande)
+        "## Detalles de la Campaña 🚀\n"
         f"**Categoría:** {categoria}\n"
         f"**Plataformas:** {plataformas}\n"
         f"**Audiencia:** Global 🌎"
@@ -273,7 +273,7 @@ async def publish_campaign(interaction: discord.Interaction,
 
     # --- SECCIÓN 2: PAGO ---
     pago_texto = (
-        "## Detalles de Pago 💸\n"       # <--- AQUÍ ESTÁ EL TRUCO (Letra Grande)
+        "## Detalles de Pago 💸\n"
         f"**Sistema de Pago:** {payrate}\n"
         f"**Mínimo para Cobrar:** 10,000 vistas\n"
         f"**Método de Pago:** PayPal"
@@ -282,7 +282,7 @@ async def publish_campaign(interaction: discord.Interaction,
 
     # --- SECCIÓN 3: UNIRSE ---
     join_texto = (
-        "## Unirse al Servidor ➡️\n"     # <--- AQUÍ ESTÁ EL TRUCO (Letra Grande)
+        "## Unirse al Servidor ➡️\n"
         "¡Haz clic en el botón de abajo para empezar!"
     )
     embed.add_field(name="\u200b", value=join_texto, inline=False)
@@ -297,7 +297,7 @@ async def publish_campaign(interaction: discord.Interaction,
     
     await channel.send(embed=embed, view=JoinButton(invite_link))
     await interaction.response.send_message("✅ Campaña publicada con estilo Gigante.", ephemeral=True)
-    
+
 @main_bot.tree.command(name="edit-campaign", description="Edita una campaña existente")
 @app_commands.default_permissions(administrator=True)
 async def edit_campaign(interaction: discord.Interaction, id_campaña: int, nombre: str = None, descripcion: str = None, payrate: str = None, invite_link: str = None):
