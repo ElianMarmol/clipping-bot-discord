@@ -17,6 +17,19 @@ load_dotenv()
 CAMPAIGNS_CHANNEL_ID = int(os.getenv("CAMPAIGNS_CHANNEL_ID", "0"))
 
 # ====================================================
+# HELPER: DETECTOR DE PLATAFORMAS (Pon esto al inicio)
+# ====================================================
+def detectar_plataforma(url: str):
+    url = url.lower().strip()
+    if "tiktok.com" in url:
+        return "tiktok", "tracked_posts_tiktok", "tiktok_url"
+    elif "youtube.com" in url or "youtu.be" in url:
+        return "youtube", "tracked_posts", "post_url"
+    elif "instagram.com" in url:
+        return "instagram", "tracked_posts_instagram", "instagram_url"
+    return None, None, None
+
+# ====================================================
 #   FUNCIONES AUXILIARES (BOUNTY)
 # ====================================================
 
@@ -621,6 +634,223 @@ async def about(interaction: discord.Interaction):
     embed.set_footer(text="💡 Usa /registrar para vincular tus cuentas")
     
     await interaction.response.send_message(embed=embed)
+
+# ==========================================
+# 1. CONFIGURACIÓN DE PAGOS (ADMIN)
+# ==========================================
+
+@main_bot.tree.command(name="config-pago", description="Configura el precio por 1,000 vistas")
+@app_commands.default_permissions(administrator=True)
+@app_commands.describe(
+    tipo="Usa 'STANDARD' para el base, o el #TAG para bounties",
+    precio_por_1k="Precio en USD (ej: 0.60 o 5.00)"
+)
+async def set_payrate(interaction: discord.Interaction, tipo: str, precio_por_1k: float):
+    key = tipo.upper().strip() # Guardamos siempre en mayúsculas
+    
+    async with main_bot.db_pool.acquire() as conn:
+        await conn.execute('''
+            INSERT INTO payment_rates (rate_key, amount_per_1k) 
+            VALUES ($1, $2)
+            ON CONFLICT (rate_key) 
+            DO UPDATE SET amount_per_1k = $2
+        ''', key, precio_por_1k)
+        
+    await interaction.response.send_message(f"✅ Precio actualizado: **{key}** = **${precio_por_1k}** / 1k views.", ephemeral=True)
+
+
+# ==========================================
+# 2. UPLOAD (Campaña Normal)
+# ==========================================
+@main_bot.tree.command(name="upload", description="Sube videos para trackear (Separa links con coma)")
+@app_commands.describe(links="Ej: link1, link2, link3")
+async def upload_post(interaction: discord.Interaction, links: str):
+    await interaction.response.defer(ephemeral=True)
+    
+    lista_links = [l.strip() for l in links.split(',') if l.strip()][:10]
+    discord_id = str(interaction.user.id)
+    reporte = []
+
+    async with main_bot.db_pool.acquire() as conn:
+        for url in lista_links:
+            plat, table, col_url = detectar_plataforma(url)
+            
+            if not plat:
+                reporte.append(f"❌ Ignorado (Link no válido): {url[:20]}...")
+                continue
+
+            try:
+                # Insertamos como Normal (is_bounty = FALSE)
+                await conn.execute(f'''
+                    INSERT INTO {table} (discord_id, {col_url}, is_bounty, uploaded_at) 
+                    VALUES ($1, $2, FALSE, NOW())
+                    ON CONFLICT ({col_url}) DO NOTHING
+                ''', discord_id, url)
+                reporte.append(f"✅ **{plat.capitalize()}:** Guardado.")
+            except Exception as e:
+                reporte.append(f"⚠️ Error: {e}")
+
+    embed = discord.Embed(title="📤 Resultado de Carga", description="\n".join(reporte) or "Ningún link válido.", color=0x3498db)
+    await interaction.followup.send(embed=embed, ephemeral=True)
+
+
+# ==========================================
+# 3. BOUNTY UPLOAD (Misiones Especiales)
+# ==========================================
+@main_bot.tree.command(name="bounty-upload", description="Sube videos para una Misión/Bounty")
+@app_commands.describe(links="Links separados por coma", tag="Tag de la misión (ej: #Navidad)")
+async def upload_bounty(interaction: discord.Interaction, links: str, tag: str):
+    await interaction.response.defer(ephemeral=True)
+    
+    lista_links = [l.strip() for l in links.split(',') if l.strip()][:10]
+    discord_id = str(interaction.user.id)
+    reporte = []
+
+    # Estandarizamos el tag a mayúsculas para que coincida con la tabla de precios
+    tag_limpio = tag.upper().strip() 
+
+    async with main_bot.db_pool.acquire() as conn:
+        for url in lista_links:
+            plat, table, col_url = detectar_plataforma(url)
+            
+            if not plat:
+                reporte.append(f"❌ Link inválido.")
+                continue
+
+            try:
+                # Insertamos/Actualizamos como Bounty
+                await conn.execute(f'''
+                    INSERT INTO {table} (discord_id, {col_url}, is_bounty, bounty_tag, uploaded_at) 
+                    VALUES ($1, $2, TRUE, $3, NOW())
+                    ON CONFLICT ({col_url}) 
+                    DO UPDATE SET is_bounty = TRUE, bounty_tag = $3
+                ''', discord_id, url, tag_limpio)
+                reporte.append(f"🎯 **{plat.capitalize()} (Bounty):** Asignado a `{tag_limpio}`")
+            except Exception as e:
+                reporte.append(f"⚠️ Error: {e}")
+
+    embed = discord.Embed(title="🎯 Carga de Bounty", description="\n".join(reporte), color=0xff9900)
+    await interaction.followup.send(embed=embed, ephemeral=True)
+
+
+# ==========================================
+# 4. REMOVE VIDEO
+# ==========================================
+@main_bot.tree.command(name="remove-video", description="Deja de trackear videos")
+async def remove_video(interaction: discord.Interaction, links: str):
+    await interaction.response.defer(ephemeral=True)
+    
+    lista_links = [l.strip() for l in links.split(',')]
+    discord_id = str(interaction.user.id)
+    eliminados = 0
+
+    async with main_bot.db_pool.acquire() as conn:
+        for url in lista_links:
+            plat, table, col_url = detectar_plataforma(url)
+            if plat:
+                res = await conn.execute(f"DELETE FROM {table} WHERE {col_url} = $1 AND discord_id = $2", url, discord_id)
+                if "1" in res: eliminados += 1
+
+    await interaction.followup.send(f"🗑️ Se han eliminado **{eliminados}** videos.", ephemeral=True)
+
+
+# ==========================================
+# 5. STATS (Calculadora Real)
+# ==========================================
+@main_bot.tree.command(name="stats", description="Ver mis estadísticas y ganancias calculadas")
+async def stats(interaction: discord.Interaction):
+    discord_id = str(interaction.user.id)
+    await interaction.response.defer(ephemeral=True)
+
+    async with main_bot.db_pool.acquire() as conn:
+        # A. Obtener precios
+        rate_std = await conn.fetchval("SELECT amount_per_1k FROM payment_rates WHERE rate_key = 'STANDARD'") or 0.60
+        bounty_rows = await conn.fetch("SELECT rate_key, amount_per_1k FROM payment_rates WHERE rate_key != 'STANDARD'")
+        bounty_map = {row['rate_key']: float(row['amount_per_1k']) for row in bounty_rows}
+
+        # B. Traer videos de las 3 tablas
+        query = """
+            SELECT post_url as url, views, is_bounty, bounty_tag, 'YouTube' as plat FROM tracked_posts WHERE discord_id = $1
+            UNION ALL
+            SELECT tiktok_url as url, views, is_bounty, bounty_tag, 'TikTok' as plat FROM tracked_posts_tiktok WHERE discord_id = $1
+            UNION ALL
+            SELECT instagram_url as url, views, is_bounty, bounty_tag, 'Instagram' as plat FROM tracked_posts_instagram WHERE discord_id = $1
+        """
+        videos = await conn.fetch(query, discord_id)
+
+    if not videos:
+        return await interaction.followup.send("📭 No tienes videos trackeados.", ephemeral=True)
+
+    total_views = 0
+    total_earned = 0.0
+    lista_txt = ""
+    
+    for v in videos:
+        views = v['views'] or 0
+        tag = (v['bounty_tag'] or "").upper().strip()
+        
+        # Lógica de Precio
+        if v['is_bounty'] and tag in bounty_map:
+            rate = bounty_map[tag]
+            tipo_lbl = f"🎯 {tag}"
+        else:
+            rate = float(rate_std)
+            tipo_lbl = "📹 Normal"
+            
+        ganancia = (views / 1000) * rate
+        total_views += views
+        total_earned += ganancia
+        
+        # Solo mostrar detalles de los últimos 5 para no llenar la pantalla
+        if len(lista_txt) < 900: 
+            lista_txt += f"**{v['plat']}** ({tipo_lbl})\nViews: {views:,} | Ganado: **${ganancia:.2f}**\n\n"
+
+    embed = discord.Embed(title="📊 Mis Estadísticas", color=0x9146FF)
+    embed.add_field(name="Global", value=f"👁️ **Vistas:** {total_views:,}\n💰 **Saldo:** ${total_earned:.2f}", inline=False)
+    embed.add_field(name="Últimos Videos", value=lista_txt or "...", inline=False)
+    embed.set_footer(text=f"Base Rate: ${rate_std}/1k views")
+    
+    await interaction.followup.send(embed=embed, ephemeral=True)
+
+
+# ==========================================
+# 6. LEADERBOARD
+# ==========================================
+@main_bot.tree.command(name="leaderboard", description="Top 10 Usuarios Globales")
+async def leaderboard(interaction: discord.Interaction):
+    await interaction.response.defer()
+
+    query = """
+    WITH all_views AS (
+        SELECT discord_id, COALESCE(views, 0) as views FROM tracked_posts
+        UNION ALL
+        SELECT discord_id, COALESCE(views, 0) as views FROM tracked_posts_tiktok
+        UNION ALL
+        SELECT discord_id, COALESCE(views, 0) as views FROM tracked_posts_instagram
+    )
+    SELECT discord_id, SUM(views) as total_views
+    FROM all_views
+    GROUP BY discord_id
+    ORDER BY total_views DESC
+    LIMIT 10;
+    """
+    
+    async with main_bot.db_pool.acquire() as conn:
+        top_users = await conn.fetch(query)
+
+    embed = discord.Embed(title="🏆 Leaderboard (Top 10)", color=0xFFD700)
+    
+    texto = ""
+    for i, user in enumerate(top_users, 1):
+        medal = "🥇" if i==1 else "🥈" if i==2 else "🥉" if i==3 else f"#{i}"
+        
+        member = interaction.guild.get_member(int(user['discord_id']))
+        name = member.display_name if member else f"Usuario...{str(user['discord_id'])[-4:]}"
+        
+        texto += f"**{medal} {name}** — {user['total_views']:,} views\n"
+
+    embed.description = texto if texto else "Aún no hay datos."
+    await interaction.followup.send(embed=embed)
 
 # =============================================
 # OTROS COMANDOS (REGISTRAR, VERIFICAR, ETC)
