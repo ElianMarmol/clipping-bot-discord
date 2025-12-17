@@ -220,14 +220,14 @@ main_bot = MainBot()
 # COMANDOS DE CAMPAÑAS (RESTAURADOS)
 # =============================================
 
-@main_bot.tree.command(name="publish-campaign", description="Publicar una campaña (Estilo Latin Clipping)")
+@main_bot.tree.command(name="publish-campaign", description="Publicar campaña (Letras Grandes)")
 @app_commands.default_permissions(administrator=True)
 @app_commands.describe(
-    nombre="Nombre de la campaña",
-    descripcion="Añade una descripcion atractiva",
+    nombre="Nombre de la campaña (ej: Alix Earle)",
+    descripcion="Frase gancho (ej: Gana dinero subiendo clips de...)",
     categoria="Ej: IRL, Gaming, Podcast",
-    plataformas="Ej: TikTok, Instagram, Youtube",
-    payrate="Ej: $0.60 / 1,000 vistas",
+    plataformas="Ej: TikTok, Instagram, YT Shorts",
+    payrate="Ej: $0.60 por 1,000 vistas",
     invite_link="Link de Discord",
     thumbnail_url="Link DIRECTO a la imagen (.png/.jpg)"
 )
@@ -242,56 +242,62 @@ async def publish_campaign(interaction: discord.Interaction,
     
     channel = interaction.client.get_channel(CAMPAIGNS_CHANNEL_ID)
     if not channel: 
-        return await interaction.response.send_message("❌ Error: No encontré el canal de campañas.", ephemeral=True)
+        return await interaction.response.send_message("❌ Error: Canal no encontrado.", ephemeral=True)
     
-    # 1. Guardar en Base de Datos
+    # 1. Guardar en Base de Datos (Igual que antes)
     async with main_bot.db_pool.acquire() as conn:
         await conn.execute('''
             INSERT INTO campaigns (name, description, category, payrate, invite_link, thumbnail_url, created_by) 
             VALUES ($1, $2, $3, $4, $5, $6, $7)
         ''', nombre, descripcion, categoria, payrate, invite_link, thumbnail_url, str(interaction.user.id))
     
-    # 2. Crear Embed Verde
+    # 2. Embed con Títulos Grandes (Markdown ##)
     embed = discord.Embed(
         title=f"{nombre} x Clipping", 
-        description=f"{descripcion} 🔥", 
-        color=0x00ff00  # <--- VERDE LATIN CLIPPING (Green)
+        description=f"### {descripcion} 🔥",  # Usamos ### para hacerlo un poco más grande
+        color=0x00ff00
     )
 
     if thumbnail_url:
         embed.set_thumbnail(url=thumbnail_url)
 
-    # Sección 1: Detalles
+    # --- SECCIÓN 1: DETALLES ---
+    # Truco: name="\u200b" (invisible), y ponemos el Título con "##" dentro del value
     detalles_texto = (
+        "## Detalles de la Campaña 🚀\n"  # <--- AQUÍ ESTÁ EL TRUCO (Letra Grande)
         f"**Categoría:** {categoria}\n"
         f"**Plataformas:** {plataformas}\n"
         f"**Audiencia:** Global 🌎"
     )
-    embed.add_field(name="Detalles de la Campaña 🚀", value=detalles_texto, inline=False)
+    embed.add_field(name="\u200b", value=detalles_texto, inline=False)
 
-    # Sección 2: Pago
+    # --- SECCIÓN 2: PAGO ---
     pago_texto = (
+        "## Detalles de Pago 💸\n"       # <--- AQUÍ ESTÁ EL TRUCO (Letra Grande)
         f"**Sistema de Pago:** {payrate}\n"
         f"**Mínimo para Cobrar:** 10,000 vistas\n"
         f"**Método de Pago:** PayPal"
     )
-    embed.add_field(name="Detalles de Pago 💸", value=pago_texto, inline=False)
+    embed.add_field(name="\u200b", value=pago_texto, inline=False)
 
-    # Sección 3: Llamada a la acción
-    embed.add_field(name="Unirse al Servidor ➡️", value="¡Haz clic en el botón de abajo para empezar!", inline=False)
+    # --- SECCIÓN 3: UNIRSE ---
+    join_texto = (
+        "## Unirse al Servidor ➡️\n"     # <--- AQUÍ ESTÁ EL TRUCO (Letra Grande)
+        "¡Haz clic en el botón de abajo para empezar!"
+    )
+    embed.add_field(name="\u200b", value=join_texto, inline=False)
 
-    # Footer
+    # Footer y Botón
     embed.set_footer(text="Nota: 🚨 Violar las reglas de la campaña = Ban Instantáneo")
 
-    # Botón
     class JoinButton(View):
         def __init__(self, link): 
             super().__init__()
             self.add_item(Button(label="Join Server", style=discord.ButtonStyle.link, url=link, emoji="➡️"))
     
     await channel.send(embed=embed, view=JoinButton(invite_link))
-    await interaction.response.send_message("✅ Campaña publicada (Verde).", ephemeral=True)
-
+    await interaction.response.send_message("✅ Campaña publicada con estilo Gigante.", ephemeral=True)
+    
 @main_bot.tree.command(name="edit-campaign", description="Edita una campaña existente")
 @app_commands.default_permissions(administrator=True)
 async def edit_campaign(interaction: discord.Interaction, id_campaña: int, nombre: str = None, descripcion: str = None, payrate: str = None, invite_link: str = None):
