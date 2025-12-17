@@ -220,15 +220,15 @@ main_bot = MainBot()
 # COMANDOS DE CAMPAÑAS (RESTAURADOS)
 # =============================================
 
-@main_bot.tree.command(name="publicar-campaña", description="Publicar campaña (Letras Grandes)")
+@main_bot.tree.command(name="publicar-campaña", description="Publicar campaña oficial")
 @app_commands.default_permissions(administrator=True)
 @app_commands.describe(
-    nombre="Nombre de la campaña (ej: Alix Earle)",
-    descripcion="Frase gancho (ej: Gana dinero subiendo clips de...)",
+    nombre="Nombre de la campaña",
+    descripcion="Frase gancho (ej: Gana dinero posteando clips)",
     categoria="Ej: IRL, Gaming, Podcast",
-    plataformas="Ej: TikTok, Instagram, YT Shorts",
-    payrate="Ej: $0.60 por 1,000 vistas",
-    invite_link="Link de Discord",
+    plataformas="Ej: TikTok, Instagram, Youtube",
+    payrate="Ej: $0.60 per 1,000 views",
+    invite_link="Link del Servidor de Discord",
     thumbnail_url="Link DIRECTO a la imagen (.png/.jpg)"
 )
 async def publish_campaign(interaction: discord.Interaction, 
@@ -240,63 +240,62 @@ async def publish_campaign(interaction: discord.Interaction,
                            invite_link: str, 
                            thumbnail_url: str = None):
     
+    # 1. Validar canal
     channel = interaction.client.get_channel(CAMPAIGNS_CHANNEL_ID)
     if not channel: 
-        return await interaction.response.send_message("❌ Error: Canal no encontrado.", ephemeral=True)
+        return await interaction.response.send_message("❌ Error: No se encontró el canal de campañas configurado.", ephemeral=True)
     
-    # 1. Guardar en Base de Datos (Igual que antes)
-    async with main_bot.db_pool.acquire() as conn:
-        await conn.execute('''
-            INSERT INTO campaigns (name, description, category, payrate, invite_link, thumbnail_url, created_by) 
-            VALUES ($1, $2, $3, $4, $5, $6, $7)
-        ''', nombre, descripcion, categoria, payrate, invite_link, thumbnail_url, str(interaction.user.id))
+    # 2. Guardar en Base de Datos
+    try:
+        async with main_bot.db_pool.acquire() as conn:
+            await conn.execute('''
+                INSERT INTO campaigns (name, description, category, payrate, invite_link, thumbnail_url, created_by) 
+                VALUES ($1, $2, $3, $4, $5, $6, $7)
+            ''', nombre, descripcion, categoria, payrate, invite_link, thumbnail_url, str(interaction.user.id))
+    except Exception as e:
+        return await interaction.response.send_message(f"❌ Error guardando en DB: {e}", ephemeral=True)
     
-    # 2. Embed con Títulos Grandes (Markdown ##)
+    # 3. Construir el contenido con Markdown de Títulos (##)
+    # Al ponerlo todo en una f-string dentro de la descripción, Discord respeta el tamaño grande.
+    texto_contenido = f"""
+**{descripcion}** 🔥
+
+## Campaign Details 🚀
+**Category:** {categoria}
+**Platforms:** {plataformas}
+**Audiences:** Global 🌎
+
+## Payment Details 💸
+**Payout System:** {payrate}
+**Minimum Views Required For Payout:** 10,000 views
+**Payment Method:** PayPal
+
+## Join Server ➡️
+Click the button below to get started!
+"""
+
+    # 4. Crear Embed
     embed = discord.Embed(
         title=f"{nombre} x Latin Clipping", 
-        description=f"### {descripcion} 🔥",  # Usamos ### para hacerlo un poco más grande
-        color=0x00ff00
+        description=texto_contenido, 
+        color=0x00ff00 # Verde Clipping
     )
 
     if thumbnail_url:
         embed.set_thumbnail(url=thumbnail_url)
 
-    # --- SECCIÓN 1: DETALLES ---
-    # Truco: name="\u200b" (invisible), y ponemos el Título con "##" dentro del value
-    detalles_texto = (
-        "## Detalles de la Campaña 🚀\n"
-        f"**Categoría:** {categoria}\n"
-        f"**Plataformas:** {plataformas}\n"
-        f"**Audiencia:** Global 🌎"
-    )
-    embed.add_field(name="\u200b", value=detalles_texto, inline=False)
+    # Footer Profesional
+    embed.set_footer(text="Note: 🚨 Violating Campaign Rules = Insta-Ban")
 
-    # --- SECCIÓN 2: PAGO ---
-    pago_texto = (
-        "## Detalles de Pago 💸\n"
-        f"**Sistema de Pago:** {payrate}\n"
-        f"**Mínimo para Cobrar:** 10,000 vistas\n"
-        f"**Método de Pago:** PayPal"
-    )
-    embed.add_field(name="\u200b", value=pago_texto, inline=False)
-
-    # --- SECCIÓN 3: UNIRSE ---
-    join_texto = (
-        "## Unirse al Servidor ➡️\n"
-        "¡Haz clic en el botón de abajo para empezar!"
-    )
-    embed.add_field(name="\u200b", value=join_texto, inline=False)
-
-    # Footer y Botón
-    embed.set_footer(text="Nota: 🚨 Violar las reglas de la campaña = Ban Instantáneo")
-
+    # 5. Botón de Enlace
     class JoinButton(View):
         def __init__(self, link): 
             super().__init__()
             self.add_item(Button(label="Join Server", style=discord.ButtonStyle.link, url=link, emoji="➡️"))
     
+    # 6. Enviar y Confirmar
     await channel.send(embed=embed, view=JoinButton(invite_link))
-    await interaction.response.send_message("✅ Campaña publicada con estilo Gigante.", ephemeral=True)
+    await interaction.response.send_message("✅ Campaña publicada exitosamente.", ephemeral=True)
 
 @main_bot.tree.command(name="edit-campaign", description="Edita una campaña existente")
 @app_commands.default_permissions(administrator=True)
