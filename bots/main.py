@@ -260,18 +260,18 @@ async def publish_campaign(interaction: discord.Interaction,
     texto_contenido = f"""
 **{descripcion}** 🔥
 
-## Campaign Details 🚀
-**Category:** {categoria}
-**Platforms:** {plataformas}
-**Audiences:** Global 🌎
+## Detalles de campaña 🚀
+**Categoría:** {categoria}
+**Plataformas:** {plataformas}
+**Audiencia:** Global 🌎
 
-## Payment Details 💸
-**Payout System:** {payrate}
-**Minimum Views Required For Payout:** 10,000 views
-**Payment Method:** PayPal
+## Detalles de pago 💸
+**Sistema de pago:** {payrate}
+**Minimo de Views para Pago:** 10,000 views
+**Método de Pago:** PayPal
 
-## Join Server ➡️
-Click the button below to get started!
+## Únete al servidor ➡️
+Click en el boton debajo para Empezar!
 """
 
     # 4. Crear Embed
@@ -285,7 +285,7 @@ Click the button below to get started!
         embed.set_thumbnail(url=thumbnail_url)
 
     # Footer Profesional
-    embed.set_footer(text="Note: 🚨 Violating Campaign Rules = Insta-Ban")
+    embed.set_footer(text="Nota: 🚨 Violacion en reglas de Campaña = Insta-Ban")
 
     # 5. Botón de Enlace
     class JoinButton(View):
