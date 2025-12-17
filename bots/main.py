@@ -223,11 +223,11 @@ main_bot = MainBot()
 @main_bot.tree.command(name="publish-campaign", description="Publicar una campaña (Estilo Latin Clipping)")
 @app_commands.default_permissions(administrator=True)
 @app_commands.describe(
-    nombre="Nombre de la campaña (ej: Alix Earle)",
-    descripcion="Frase gancho (ej: Gana dinero subiendo clips de...)",
+    nombre="Nombre de la campaña",
+    descripcion="Añade una descripcion atractiva",
     categoria="Ej: IRL, Gaming, Podcast",
-    plataformas="Ej: TikTok, Instagram, YT Shorts",
-    payrate="Ej: $0.60 por 1,000 vistas",
+    plataformas="Ej: TikTok, Instagram, Youtube",
+    payrate="Ej: $0.60 / 1,000 vistas",
     invite_link="Link de Discord",
     thumbnail_url="Link DIRECTO a la imagen (.png/.jpg)"
 )
