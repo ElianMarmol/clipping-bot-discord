@@ -220,51 +220,77 @@ main_bot = MainBot()
 # COMANDOS DE CAMPAÑAS (RESTAURADOS)
 # =============================================
 
-@main_bot.tree.command(name="publish-campaign", description="Publica una nueva campaña")
-@app_commands.describe(
-    nombre="Nombre de la campaña",
-    descripcion="Descripción",
-    categoria="Categoría",
-    payrate="Ej: $5/1000 views",
-    invite_link="Link de invitación",
-    thumbnail_url="Imagen (opcional)"
-)
+@main_bot.tree.command(name="publish-campaign", description="Publicar una campaña (Estilo Latin Clipping)")
 @app_commands.default_permissions(administrator=True)
-async def publish_campaign(interaction: discord.Interaction, nombre: str, descripcion: str, categoria: str, payrate: str, invite_link: str, thumbnail_url: str = None):
-    print("📥 Ejecutando publish_campaign()")
+@app_commands.describe(
+    nombre="Nombre de la campaña (ej: Alix Earle)",
+    descripcion="Frase gancho (ej: Gana dinero subiendo clips de...)",
+    categoria="Ej: IRL, Gaming, Podcast",
+    plataformas="Ej: TikTok, Instagram, YT Shorts",
+    payrate="Ej: $0.60 por 1,000 vistas",
+    invite_link="Link de Discord",
+    thumbnail_url="Link DIRECTO a la imagen (.png/.jpg)"
+)
+async def publish_campaign(interaction: discord.Interaction, 
+                           nombre: str, 
+                           descripcion: str, 
+                           categoria: str, 
+                           plataformas: str,
+                           payrate: str, 
+                           invite_link: str, 
+                           thumbnail_url: str = None):
     
-    # Validar canal
     channel = interaction.client.get_channel(CAMPAIGNS_CHANNEL_ID)
-    if not channel:
-        await interaction.response.send_message("❌ No se encontró el canal de campañas. Verifica el ID en .env", ephemeral=True)
-        return
+    if not channel: 
+        return await interaction.response.send_message("❌ Error: No encontré el canal de campañas.", ephemeral=True)
+    
+    # 1. Guardar en Base de Datos
+    async with main_bot.db_pool.acquire() as conn:
+        await conn.execute('''
+            INSERT INTO campaigns (name, description, category, payrate, invite_link, thumbnail_url, created_by) 
+            VALUES ($1, $2, $3, $4, $5, $6, $7)
+        ''', nombre, descripcion, categoria, payrate, invite_link, thumbnail_url, str(interaction.user.id))
+    
+    # 2. Crear Embed Verde
+    embed = discord.Embed(
+        title=f"{nombre} x Clipping", 
+        description=f"{descripcion} 🔥", 
+        color=0x00ff00  # <--- VERDE LATIN CLIPPING (Green)
+    )
 
-    try:
-        # Guardar en BD
-        async with main_bot.db_pool.acquire() as conn:
-            await conn.execute('''
-                INSERT INTO campaigns (name, description, category, payrate, invite_link, thumbnail_url, created_by)
-                VALUES ($1, $2, $3, $4, $5, $6, $7)
-            ''', nombre, descripcion, categoria, payrate, invite_link, thumbnail_url, str(interaction.user.id))
+    if thumbnail_url:
+        embed.set_thumbnail(url=thumbnail_url)
 
-        # Enviar Embed
-        embed = discord.Embed(title=f"🎯 {nombre}", description=descripcion, color=0x00ff00, timestamp=datetime.now())
-        embed.add_field(name="🏷️ Categoría", value=categoria)
-        embed.add_field(name="💰 Payrate", value=payrate)
-        embed.set_footer(text=f"Publicado por {interaction.user.display_name}")
-        if thumbnail_url:
-            embed.set_thumbnail(url=thumbnail_url)
+    # Sección 1: Detalles
+    detalles_texto = (
+        f"**Categoría:** {categoria}\n"
+        f"**Plataformas:** {plataformas}\n"
+        f"**Audiencia:** Global 🌎"
+    )
+    embed.add_field(name="Detalles de la Campaña 🚀", value=detalles_texto, inline=False)
 
-        class JoinButton(View):
-            def __init__(self, link):
-                super().__init__()
-                self.add_item(Button(label="Join Server", style=discord.ButtonStyle.link, url=link))
+    # Sección 2: Pago
+    pago_texto = (
+        f"**Sistema de Pago:** {payrate}\n"
+        f"**Mínimo para Cobrar:** 10,000 vistas\n"
+        f"**Método de Pago:** PayPal"
+    )
+    embed.add_field(name="Detalles de Pago 💸", value=pago_texto, inline=False)
 
-        await channel.send(embed=embed, view=JoinButton(invite_link))
-        await interaction.response.send_message("✅ Campaña publicada correctamente.", ephemeral=True)
+    # Sección 3: Llamada a la acción
+    embed.add_field(name="Unirse al Servidor ➡️", value="¡Haz clic en el botón de abajo para empezar!", inline=False)
 
-    except Exception as e:
-        await interaction.response.send_message(f"❌ Error interno: {e}", ephemeral=True)
+    # Footer
+    embed.set_footer(text="Nota: 🚨 Violar las reglas de la campaña = Ban Instantáneo")
+
+    # Botón
+    class JoinButton(View):
+        def __init__(self, link): 
+            super().__init__()
+            self.add_item(Button(label="Join Server", style=discord.ButtonStyle.link, url=link, emoji="➡️"))
+    
+    await channel.send(embed=embed, view=JoinButton(invite_link))
+    await interaction.response.send_message("✅ Campaña publicada (Verde).", ephemeral=True)
 
 @main_bot.tree.command(name="edit-campaign", description="Edita una campaña existente")
 @app_commands.default_permissions(administrator=True)
