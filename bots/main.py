@@ -29,6 +29,49 @@ def detectar_plataforma(url: str):
         return "instagram", "tracked_posts_instagram", "instagram_url"
     return None, None, None
 
+# ==========================================
+# CLASE: VISTA DE REGISTRO (Botón Azul)
+# ==========================================
+class RegistrationView(discord.ui.View):
+    def __init__(self):
+        # timeout=None es CRÍTICO para que el botón funcione para siempre
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="Registrarse", style=discord.ButtonStyle.blurple, custom_id="latin_clipping:register_btn")
+    async def register_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        # --- TEXTO DEL MENSAJE 2 (Instrucciones Ocultas) ---
+        texto_instrucciones = """
+**¡Nos alegra que hayas elegido contribuir en Latin Clipping!** 🚀
+
+Nuestros registros indican que quizás aún no has vinculado tus cuentas. Vamos a solucionarlo.
+
+**1. Vincula tus redes** 🔗
+Usa el comando `/registrar` seguido de la plataforma y tu usuario.
+> *Ejemplo: `/registrar tiktok @miusuario`*
+
+**2. Verifica tu propiedad** ✅
+Una vez añadida, usa el comando `/verificar` para obtener tu código secreto y ponlo en tu biografía.
+> *Ejemplo: `/verificar tiktok @miusuario`*
+
+**3. Configura tu pago** 💸
+Es vital para poder cobrar.
+> *Ejemplo: `/add-paypal tu@email.com Nombre Apellido`*
+
+**¡Ahora la mejor parte!**
+Lee los requisitos de la campaña en los canales correspondientes y ¡empieza a subir clips!
+
+Si necesitas ayuda, únete a nuestro soporte o abre un ticket.
+**¡Gracias por elegir Latin Clipping!**
+"""
+        embed = discord.Embed(
+            title="Bienvenido a Latin Clipping (Panel de Usuario)",
+            description=texto_instrucciones,
+            color=0x3498db # Azul estilo Clipping
+        )
+        embed.set_footer(text="Latin Clipping 2025")
+        
+        # Enviamos el mensaje oculto (ephemeral=True)
+        await interaction.response.send_message(embed=embed, ephemeral=True)           
 # ====================================================
 #   FUNCIONES AUXILIARES (BOUNTY)
 # ====================================================
@@ -95,10 +138,12 @@ class MainBot(commands.Bot):
         await self.create_tables()
         print("✅ Bot Principal - Base de datos conectada")
         self.bounty_task = asyncio.create_task(self.bounty_loop())
+        self.add_view(RegistrationView())
+        print("👀 Vista de Registro cargada y persistente.")
 
     async def create_tables(self):
         async with self.db_pool.acquire() as conn:
-            # Usuarios y Cuentas (IDs como TEXT)
+            # --- 1. USUARIOS Y CUENTAS ---
             await conn.execute('''
                 CREATE TABLE IF NOT EXISTS users (
                     discord_id TEXT PRIMARY KEY, 
@@ -132,40 +177,48 @@ class MainBot(commands.Bot):
                     UNIQUE (discord_id, method_type)
                 )
             ''')
-            # Posts
-            await conn.execute('''
+
+            # --- 2. POSTS (YouTube, TikTok e Instagram) ---
+            # Definimos las columnas comunes para no repetir código y evitar errores
+            common_columns = """
+                id SERIAL PRIMARY KEY,
+                discord_id TEXT,
+                video_id TEXT,
+                is_bounty BOOLEAN DEFAULT FALSE,
+                bounty_tag TEXT,
+                uploaded_at TIMESTAMP DEFAULT NOW(),
+                views INTEGER DEFAULT 0,
+                likes INTEGER DEFAULT 0,
+                shares INTEGER DEFAULT 0,
+                starting_views INTEGER DEFAULT 0,
+                final_earned_usd NUMERIC DEFAULT 0
+            """
+            
+            # YouTube
+            await conn.execute(f'''
                 CREATE TABLE IF NOT EXISTS tracked_posts (
-                    id SERIAL PRIMARY KEY,
-                    discord_id TEXT,
-                    post_url TEXT UNIQUE,
-                    video_id TEXT,
-                    is_bounty BOOLEAN DEFAULT FALSE,
-                    bounty_tag TEXT,
-                    uploaded_at TIMESTAMP DEFAULT NOW(),
-                    views INTEGER DEFAULT 0,
-                    likes INTEGER DEFAULT 0,
-                    shares INTEGER DEFAULT 0,
-                    starting_views INTEGER DEFAULT 0,
-                    final_earned_usd NUMERIC DEFAULT 0
+                    {common_columns},
+                    post_url TEXT UNIQUE
                 )
             ''')
-            await conn.execute('''
+            
+            # TikTok
+            await conn.execute(f'''
                 CREATE TABLE IF NOT EXISTS tracked_posts_tiktok (
-                    id SERIAL PRIMARY KEY,
-                    discord_id TEXT,
-                    tiktok_url TEXT UNIQUE,
-                    video_id TEXT,
-                    is_bounty BOOLEAN DEFAULT FALSE,
-                    bounty_tag TEXT,
-                    uploaded_at TIMESTAMP DEFAULT NOW(),
-                    views INTEGER DEFAULT 0,
-                    likes INTEGER DEFAULT 0,
-                    shares INTEGER DEFAULT 0,
-                    starting_views INTEGER DEFAULT 0,
-                    final_earned_usd NUMERIC DEFAULT 0
+                    {common_columns},
+                    tiktok_url TEXT UNIQUE
                 )
             ''')
-            # Config y Campañas
+            
+            # Instagram (NUEVO: Agregado para que no falle /stats)
+            await conn.execute(f'''
+                CREATE TABLE IF NOT EXISTS tracked_posts_instagram (
+                    {common_columns},
+                    instagram_url TEXT UNIQUE
+                )
+            ''')
+
+            # --- 3. CONFIGURACIÓN Y CAMPAÑAS ---
             await conn.execute('''
                 CREATE TABLE IF NOT EXISTS server_settings (
                     guild_id BIGINT PRIMARY KEY,
@@ -176,19 +229,37 @@ class MainBot(commands.Bot):
                     created_at TIMESTAMP DEFAULT NOW()
                 )
             ''')
+            
+            # Actualizamos definición de campañas (message_id, platforms, etc)
             await conn.execute('''
                 CREATE TABLE IF NOT EXISTS campaigns (
                     id SERIAL PRIMARY KEY,
                     name TEXT NOT NULL,
                     description TEXT,
                     category TEXT,
+                    platforms TEXT,
                     payrate TEXT,
                     invite_link TEXT,
                     thumbnail_url TEXT,
+                    message_id TEXT,
+                    channel_id TEXT,
                     created_by TEXT,
                     created_at TIMESTAMP DEFAULT NOW()
                 )
             ''')
+            
+            # --- 4. PRECIOS (NUEVO) ---
+            # Tabla centralizada para manejar precios estándar y bounties
+            await conn.execute('''
+                CREATE TABLE IF NOT EXISTS payment_rates (
+                    rate_key TEXT PRIMARY KEY,
+                    amount_per_1k NUMERIC DEFAULT 0.60,
+                    description TEXT
+                )
+            ''')
+            
+            # Mantenemos bounty_rates por compatibilidad si la usas en otro lado, 
+            # pero el sistema nuevo usa payment_rates
             await conn.execute('''
                 CREATE TABLE IF NOT EXISTS bounty_rates (
                     id SERIAL PRIMARY KEY,
@@ -197,8 +268,9 @@ class MainBot(commands.Bot):
                     per_views INT
                 )
             ''')
-            print("✅ Tablas verificadas")
-
+            
+            print("✅ Tablas verificadas y actualizadas (Estructura Completa)")
+            
     async def on_ready(self):
         print(f"🔵 {self.user} conectado (ID: {self.user.id})")
         try:
@@ -592,7 +664,39 @@ Existen dos sistemas para calcular recompensas:
     embed.set_thumbnail(url="https://cdn-icons-png.flaticon.com/512/189/189665.png") # Icono de Info
 
     await interaction.channel.send(embed=embed)
-    await interaction.response.send_message("✅ Información publicada correctamente.", ephemeral=True)   
+    await interaction.response.send_message("✅ Información publicada correctamente.", ephemeral=True)
+
+# ==========================================
+# COMANDO: SETUP REGISTRO (Admin)
+# ==========================================
+@main_bot.tree.command(name="setup-registro", description="Publica el panel de bienvenida y registro")
+@app_commands.default_permissions(administrator=True)
+async def setup_registro(interaction: discord.Interaction):
+    
+    # --- TEXTO DEL MENSAJE 1 (Público) ---
+    texto_bienvenida = """
+**Por favor, haz clic en el botón de abajo para comenzar el proceso de registro.** 👇
+
+Si has usado nuestros servicios antes, tendrás acceso a todas tus cuentas vinculadas en el ecosistema de Latin Clipping inmediatamente.
+
+Si no, serás guiado a través del proceso de registro de cuenta paso a paso.
+
+Si aún no lo has hecho, por favor configura el método de pago requerido para este programa también.
+
+**¡Gracias por elegir Latin Clipping!**
+"""
+
+    embed = discord.Embed(
+        title="Bienvenido a Latin Clipping Bot",
+        description=texto_bienvenida,
+        color=0x3498db # Azul
+    )
+    embed.set_footer(text="Latin Clipping 2025")
+
+    # Enviamos el embed con la Vista (el botón)
+    await interaction.channel.send(embed=embed, view=RegistrationView())
+    
+    await interaction.response.send_message("✅ Panel de registro publicado.", ephemeral=True)
 
 
 # =============================================
