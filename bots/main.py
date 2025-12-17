@@ -240,21 +240,22 @@ async def publish_campaign(interaction: discord.Interaction,
                            invite_link: str, 
                            thumbnail_url: str = None):
     
-    # 1. Validar canal
+    # 1. Usar el canal actual
     channel = interaction.channel
     
-    # 2. Guardar en Base de Datos
+    # 2. Guardar en Base de Datos (Insertar y obtener ID)
     try:
         async with main_bot.db_pool.acquire() as conn:
-            await conn.execute('''
-                INSERT INTO campaigns (name, description, category, payrate, invite_link, thumbnail_url, created_by) 
-                VALUES ($1, $2, $3, $4, $5, $6, $7)
-            ''', nombre, descripcion, categoria, payrate, invite_link, thumbnail_url, str(interaction.user.id))
+            # Agregamos 'platforms' al insert y usamos RETURNING id
+            campaign_id = await conn.fetchval('''
+                INSERT INTO campaigns (name, description, category, platforms, payrate, invite_link, thumbnail_url, created_by) 
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                RETURNING id
+            ''', nombre, descripcion, categoria, plataformas, payrate, invite_link, thumbnail_url, str(interaction.user.id))
     except Exception as e:
         return await interaction.response.send_message(f"❌ Error guardando en DB: {e}", ephemeral=True)
     
-    # 3. Construir el contenido con Markdown de Títulos (##)
-    # Al ponerlo todo en una f-string dentro de la descripción, Discord respeta el tamaño grande.
+    # 3. Construir el contenido
     texto_contenido = f"""
 **{descripcion}** 🔥
 
@@ -282,40 +283,133 @@ Click en el boton debajo para Empezar!
     if thumbnail_url:
         embed.set_thumbnail(url=thumbnail_url)
 
-    # Footer Profesional
-    embed.set_footer(text="Nota: 🚨 Violacion en reglas de Campaña = Insta-Ban")
+    # Footer con el ID para referencia
+    embed.set_footer(text=f"Campaña ID: {campaign_id} | Nota: 🚨 Violacion en reglas de Campaña = Insta-Ban")
 
-    # 5. Botón de Enlace
+    # 5. Botón
     class JoinButton(View):
         def __init__(self, link): 
             super().__init__()
             self.add_item(Button(label="Join Server", style=discord.ButtonStyle.link, url=link, emoji="➡️"))
     
-    # 6. Enviar y Confirmar
-    await channel.send(embed=embed, view=JoinButton(invite_link))
-    await interaction.response.send_message("✅ Campaña publicada exitosamente.", ephemeral=True)
-
-@main_bot.tree.command(name="edit-campaign", description="Edita una campaña existente")
-@app_commands.default_permissions(administrator=True)
-async def edit_campaign(interaction: discord.Interaction, id_campaña: int, nombre: str = None, descripcion: str = None, payrate: str = None, invite_link: str = None):
+    # 6. ENVIAR MENSAJE
+    msg = await channel.send(embed=embed, view=JoinButton(invite_link))
+    
+    # 7. CRÍTICO: Actualizar la DB con el ID del mensaje enviado
+    # Esto permite que el comando 'editar' encuentre este mensaje después
     async with main_bot.db_pool.acquire() as conn:
-        camp = await conn.fetchrow("SELECT * FROM campaigns WHERE id = $1", id_campaña)
-        if not camp:
-            await interaction.response.send_message("❌ Campaña no encontrada.", ephemeral=True)
-            return
-
-        new_name = nombre or camp["name"]
-        new_desc = descripcion or camp["description"]
-        new_rate = payrate or camp["payrate"]
-        new_link = invite_link or camp["invite_link"]
-
         await conn.execute('''
-            UPDATE campaigns SET name=$1, description=$2, payrate=$3, invite_link=$4 WHERE id=$5
-        ''', new_name, new_desc, new_rate, new_link, id_campaña)
+            UPDATE campaigns 
+            SET message_id = $1, channel_id = $2 
+            WHERE id = $3
+        ''', str(msg.id), str(channel.id), campaign_id)
 
-    embed = discord.Embed(title="✅ Campaña Actualizada", description=f"Campaña **{new_name}** editada.", color=0x00ff00)
-    embed.add_field(name="💰 Payrate", value=new_rate)
-    await interaction.response.send_message(embed=embed, ephemeral=True)
+    # 8. Confirmación invisible para ti
+    await interaction.response.send_message(f"✅ Campaña **#{campaign_id}** publicada y guardada exitosamente.", ephemeral=True)
+
+
+
+@main_bot.tree.command(name="editar-campaña", description="Edita una campaña activa y actualiza su mensaje")
+@app_commands.default_permissions(administrator=True)
+@app_commands.describe(
+    id_campana="El ID numérico de la campaña (mira el footer del mensaje)",
+    nombre="(Opcional) Nuevo nombre",
+    descripcion="(Opcional) Nueva frase gancho",
+    categoria="(Opcional) Nueva categoría",
+    plataformas="(Opcional) Nuevas plataformas",
+    payrate="(Opcional) Nuevo pago",
+    invite_link="(Opcional) Nuevo link",
+    thumbnail_url="(Opcional) Nueva imagen"
+)
+async def edit_campaign(interaction: discord.Interaction, 
+                        id_campana: int, 
+                        nombre: str = None, 
+                        descripcion: str = None, 
+                        categoria: str = None,
+                        plataformas: str = None,
+                        payrate: str = None, 
+                        invite_link: str = None,
+                        thumbnail_url: str = None):
+    
+    await interaction.response.defer(ephemeral=True)
+
+    async with main_bot.db_pool.acquire() as conn:
+        # 1. Obtener datos actuales
+        camp = await conn.fetchrow("SELECT * FROM campaigns WHERE id = $1", id_campana)
+        
+        if not camp:
+            return await interaction.followup.send("❌ Campaña no encontrada (Revisa el ID).")
+        
+        if not camp['message_id'] or not camp['channel_id']:
+            return await interaction.followup.send("⚠️ Esta campaña es antigua o no se guardó bien el mensaje. No puedo editarla visualmente.")
+
+        # 2. Mezclar datos nuevos con viejos (Si no envías nada, mantiene lo anterior)
+        new_name = nombre or camp['name']
+        new_desc = descripcion or camp['description']
+        new_cat = categoria or camp['category']
+        new_plat = plataformas or camp.get('platforms', 'TikTok, Instagram, Youtube') 
+        new_rate = payrate or camp['payrate']
+        new_link = invite_link or camp['invite_link']
+        new_thumb = thumbnail_url or camp['thumbnail_url']
+
+        # 3. Actualizar Base de Datos
+        await conn.execute('''
+            UPDATE campaigns 
+            SET name=$1, description=$2, category=$3, platforms=$4, payrate=$5, invite_link=$6, thumbnail_url=$7 
+            WHERE id=$8
+        ''', new_name, new_desc, new_cat, new_plat, new_rate, new_link, new_thumb, id_campana)
+
+    # 4. ACTUALIZAR EL MENSAJE EN DISCORD
+    try:
+        channel = interaction.client.get_channel(int(camp['channel_id']))
+        if not channel:
+            return await interaction.followup.send("❌ El canal original ya no existe.")
+            
+        message = await channel.fetch_message(int(camp['message_id']))
+        
+        # 5. Reconstruir el Embed (Estilo Gigante)
+        texto_contenido = f"""
+**{new_desc}** 🔥
+
+## Detalles de campaña 🚀
+**Categoría:** {new_cat}
+**Plataformas:** {new_plat}
+**Audiencia:** Global 🌎
+
+## Detalles de pago 💸
+**Sistema de pago:** {new_rate}
+**Minimo de Views para Pago:** 10,000 views
+**Método de Pago:** PayPal
+
+## Únete al servidor ➡️
+Click en el boton debajo para Empezar!
+"""
+        new_embed = discord.Embed(
+            title=f"{new_name} x Latin Clipping", 
+            description=texto_contenido, 
+            color=0x00ff00
+        )
+        
+        if new_thumb:
+            new_embed.set_thumbnail(url=new_thumb)
+            
+        new_embed.set_footer(text=f"Campaña ID: {id_campana} | Nota: 🚨 Violacion en reglas de Campaña = Insta-Ban")
+
+        # Botón actualizado
+        class JoinButton(discord.ui.View):
+            def __init__(self, link): 
+                super().__init__()
+                self.add_item(discord.ui.Button(label="Join Server", style=discord.ButtonStyle.link, url=link, emoji="➡️"))
+
+        # 6. Edición Mágica
+        await message.edit(embed=new_embed, view=JoinButton(new_link))
+        
+        await interaction.followup.send(f"✅ Campaña **#{id_campana}** actualizada visualmente.", ephemeral=True)
+
+    except discord.NotFound:
+        await interaction.followup.send("⚠️ Datos guardados en DB, pero no encontré el mensaje original (quizás fue borrado).")
+    except Exception as e:
+        await interaction.followup.send(f"❌ Error técnico al editar: {e}")
 
 @main_bot.tree.command(name="list-campaigns", description="Muestra campañas activas")
 async def list_campaigns(interaction: discord.Interaction):
@@ -331,6 +425,54 @@ async def list_campaigns(interaction: discord.Interaction):
         embed.add_field(name=f"🎯 {camp['name']} (ID: {camp['id']})", value=f"{camp['category']} | {camp['payrate']}", inline=False)
     
     await interaction.response.send_message(embed=embed, ephemeral=True)
+
+# =============================================
+# COMANDO: INFO (DISEÑO RESTAURADO)
+# =============================================
+
+@main_bot.tree.command(name="guia-comandos", description="Publica la guía de ayuda para usuarios")
+@app_commands.default_permissions(administrator=True)
+async def post_user_guide(interaction: discord.Interaction):
+    
+    # Texto con formato Markdown para que sea fácil de leer
+    contenido_guia = """
+Aquí tienes los comandos esenciales para gestionar tu cuenta y empezar a ganar dinero.
+
+### 🔗 Vincular Cuentas
+`/registrar [plataforma] [usuario]`
+> **Paso 1:** Vincula tu TikTok, YouTube o Instagram.
+> *Ejemplo: `/registrar plataforma:TikTok usuario:@miusuario`*
+
+`/verificar [plataforma] [usuario]`
+> **Paso 2:** Confirma que eres el dueño. El bot te dará un código para poner en tu biografía.
+> *Ejemplo: `/verificar plataforma:TikTok usuario:@miusuario`*
+
+### 💰 Pagos y Ganancias
+`/add-paypal [email] [nombre] [apellido]`
+> **Importante:** Configura esto para recibir tus pagos automáticamente.
+
+`/mis-videos`
+> Mira el rendimiento de tus clips subidos, vistas acumuladas y dinero estimado.
+
+### 📊 Información
+`/info`
+> Estadísticas globales del servidor (pagos totales, usuarios, etc).
+"""
+
+    embed = discord.Embed(
+        title="📚 Guía de Comandos | Latin Clipping",
+        description=contenido_guia,
+        color=0x00ff00 # Verde marca
+    )
+    
+    # Puedes poner una imagen pequeña o logo si quieres
+    # embed.set_thumbnail(url="TU_LOGO_AQUI") 
+    
+    embed.set_footer(text="¿Tienes dudas? Abre un ticket en #soporte 🎫")
+
+    await interaction.channel.send(embed=embed)
+    await interaction.response.send_message("✅ Guía publicada en este canal.", ephemeral=True)
+
 
 # =============================================
 # COMANDO: INFO (DISEÑO RESTAURADO)
