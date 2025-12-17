@@ -241,9 +241,7 @@ async def publish_campaign(interaction: discord.Interaction,
                            thumbnail_url: str = None):
     
     # 1. Validar canal
-    channel = interaction.client.get_channel(CAMPAIGNS_CHANNEL_ID)
-    if not channel: 
-        return await interaction.response.send_message("❌ Error: No se encontró el canal de campañas configurado.", ephemeral=True)
+    channel = interaction.channel
     
     # 2. Guardar en Base de Datos
     try:
