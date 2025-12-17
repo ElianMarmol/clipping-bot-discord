@@ -473,6 +473,114 @@ Aquí tienes los comandos esenciales para gestionar tu cuenta y empezar a ganar 
     await interaction.channel.send(embed=embed)
     await interaction.response.send_message("✅ Guía publicada en este canal.", ephemeral=True)
 
+@main_bot.tree.command(name="publicar-reglas", description="Publica las reglas con formato GIGANTE")
+@app_commands.default_permissions(administrator=True)
+async def post_campaign_rules(interaction: discord.Interaction):
+    
+    # Usamos Markdown para controlar el tamaño:
+    # #  -> Título Gigante
+    # ### -> Subtítulo Grande
+    
+    reglas_texto = """
+# Reglas de la Campaña 🚨
+
+### 1. Prohibido el uso de bots 🤖
+> El uso de bots, granjas de clicks o interacción falsa está terminantemente prohibido.
+
+### 2. Audiencia real requerida 🌎
+> No participes en campañas que pidan una audiencia (país/idioma) que no coincida con la tuya.
+
+### 3. Contenido fiel a los requisitos 📋
+> Tu video debe cumplir estrictamente lo que pide la marca. Nada de contenido engañoso.
+
+### 4. Cero colaboraciones artificiales 🤝
+> No se permite la función "Colaboración" de Instagram/TikTok ni grupos de engagement para inflar números.
+
+### 5. Métricas visibles 👁️
+> Está prohibido ocultar el recuento de "Me gusta" o los comentarios. Todo debe ser público.
+
+### 6. Calidad ante todo ✨
+> Videos de baja calidad, pantalla negra o sin esfuerzo serán eliminados y el usuario baneado.
+
+### 7. No re-subir contenido (Spam) ♻️
+> No puedes subir el mismo video varias veces en la misma cuenta.
+
+### 8. Mantener público hasta el pago 💰
+> Si borras o archivas el video antes de recibir el pago, no se te pagará. Los clientes revisan todo.
+
+### 9. Decisión del Staff ⚖️
+> Las decisiones de los administradores son definitivas. El incumplimiento conlleva expulsión inmediata.
+"""
+
+    # Nota: Ponemos todo en la descripción para que funcionen los tamaños grandes
+    embed = discord.Embed(
+        description=reglas_texto, # <--- AQUÍ VA EL TEXTO PARA QUE SE VEA GRANDE
+        color=0xff0000 # Rojo
+    )
+    
+    # Opcional: Imagen decorativa abajo o arriba
+    embed.set_thumbnail(url="https://cdn-icons-png.flaticon.com/512/1022/1022300.png") 
+    
+    embed.set_footer(text="⚠️ Violación de reglas = Ban Permanente")
+
+    await interaction.channel.send(embed=embed)
+    await interaction.response.send_message("✅ Reglas publicadas con formato grande.", ephemeral=True)
+
+@main_bot.tree.command(name="publicar-info", description="Publica la información detallada de pagos y funcionamiento")
+@app_commands.default_permissions(administrator=True)
+async def post_campaign_info(interaction: discord.Interaction):
+    
+    # Texto formateado con Markdown para tamaño Gigante (#) y Grande (###)
+    info_texto = """
+# Información de la Campaña ℹ️
+
+## ⏳ Duración y Finalización
+Las campañas se pueden llevar a cabo de dos maneras:
+
+### 1. Basada en un plazo 📅
+> Se selecciona y publica una **fecha específica**, hasta la cual se permite enviar publicaciones. Después de esa fecha, la campaña finaliza.
+
+### 2. Basada en el Presupuesto 💰
+> No hay fecha límite fija. La campaña continúa hasta que se agote el presupuesto del patrocinador.
+> *Nota: La mayoría de nuestras campañas funcionan así.*
+
+# Pagos 💸
+
+### 🧮 Cálculo de pagos
+Existen dos sistemas para calcular recompensas:
+> **A. Tasa de pago:** Tarifa fija (Ej: $1 por cada 1000 views).
+> **B. Tipo Bote:** Pago proporcional a tu % del total de visualizaciones de toda la campaña.
+
+### 📉 Requisitos Mínimos
+> **Publicación Individual:** Cada video debe superar las **1,000 views**.
+> **Total de Campaña:** La suma de todas tus publicaciones debe superar el mínimo de la campaña (usualmente **25,000 views**) para poder cobrar.
+
+### 🗓️ Plazos de Pago
+> Los pagos **NO son inmediatos**. Se envían tras la finalización de la campaña y la revisión manual para descartar fraudes.
+
+### 💳 Método y Transmisión
+> Se paga únicamente por el método designado (ej: PayPal).
+> Los pagos se envían a los datos registrados al finalizar la campaña. Si tus datos están mal, es tu responsabilidad.
+
+# Visualizaciones 👁️
+
+### ⏱️ Seguimiento
+> El trackeo comienza al enviar el link. Las views se actualizan **cada 12 horas**.
+
+### 📺 YouTube (Calidad)
+> En YouTube monitorizamos **"Visualizaciones con interacción"**, no el contador superficial. Esto indica quién vio el contenido de verdad.
+"""
+
+    embed = discord.Embed(
+        description=info_texto, # <--- Todo en description para el efecto Gigante
+        color=0xe67e22 # Color Naranja/Dorado para Información
+    )
+    
+    embed.set_thumbnail(url="https://cdn-icons-png.flaticon.com/512/189/189665.png") # Icono de Info
+
+    await interaction.channel.send(embed=embed)
+    await interaction.response.send_message("✅ Información publicada correctamente.", ephemeral=True)   
+
 
 # =============================================
 # COMANDO: INFO (DISEÑO RESTAURADO)
