@@ -98,7 +98,7 @@ async def confirm_verification(payload: VerificationPayload):
         return {"status": "ignored", "verified": False, "reason": "code_not_found"}
 
     try:
-        async with main_bot.db_pool.acquire() as conn:
+        async with app.db_pool.acquire() as conn:
             await conn.execute('''
                 UPDATE social_accounts 
                 SET is_verified = TRUE, verified_at = NOW()
