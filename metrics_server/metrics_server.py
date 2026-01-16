@@ -90,19 +90,26 @@ async def save_metrics(payload: MetricsPayload):
 # ---------------------------------------------------------
 @app.post("/users/confirm-verification")
 async def confirm_verification(payload: VerificationPayload):
-    """n8n llama aquí si encontró el código en la BIO"""
-    if not payload.is_verified:
-        return {"status": "ignored", "reason": "not verified"}
-
-    async with app.db_pool.acquire() as conn:
-        await conn.execute('''
-            UPDATE social_accounts 
-            SET is_verified = TRUE, verified_at = NOW()
-            WHERE discord_id = $1 AND platform = $2
-        ''', payload.discord_id, payload.platform)
+    print(f"🕵️ n8n intentó verificar {payload.platform} para {payload.discord_id}. Resultado: {payload.is_verified}")
     
-    print(f"✅ Usuario {payload.discord_id} verificado en {payload.platform}")
-    return {"status": "success"}
+    # Si n8n dice que NO está verificado (código no encontrado)
+    if not payload.is_verified:
+        # Devolvemos verified: False para que el bot avise al usuario
+        return {"status": "ignored", "verified": False, "reason": "code_not_found"}
+
+    try:
+        async with main_bot.db_pool.acquire() as conn:
+            await conn.execute('''
+                UPDATE social_accounts 
+                SET is_verified = TRUE, verified_at = NOW()
+                WHERE discord_id = $1 AND platform = $2
+            ''', payload.discord_id, payload.platform)
+            
+        return {"status": "success", "verified": True}
+        
+    except Exception as e:
+        print(f"❌ Error DB verification: {e}")
+        return {"status": "error", "verified": False, "message": str(e)}
 
 async def start_metrics_server():
     port = int(os.getenv("PORT", 8000))
