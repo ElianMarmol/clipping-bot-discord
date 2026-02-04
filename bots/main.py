@@ -280,24 +280,33 @@ class MainBot(commands.Bot):
             print(f"❌ Error sync: {e}")
 
     async def bounty_loop(self):
-        await self.wait_until_ready()
-        while not self.is_closed():
-            try:
-                async with self.db_pool.acquire() as conn:
-                    yt_posts = await conn.fetch("SELECT discord_id, post_url, bounty_tag, views FROM tracked_posts WHERE is_bounty = TRUE")
-                    tt_posts = await conn.fetch("SELECT discord_id, tiktok_url AS post_url, bounty_tag, views FROM tracked_posts_tiktok WHERE is_bounty = TRUE")
-                    all_posts = yt_posts + tt_posts
-
-                    for post in all_posts:
-                        is_youtube = "youtube.com" in post["post_url"] or "youtu.be" in post["post_url"]
-                        table = "tracked_posts" if is_youtube else "tracked_posts_tiktok"
+            await self.wait_until_ready()
+            while not self.is_closed():
+                try:
+                    async with self.db_pool.acquire() as conn:
+                        # 1. Traemos de las 3 tablas
+                        yt_posts = await conn.fetch("SELECT discord_id, post_url, bounty_tag, views FROM tracked_posts WHERE is_bounty = TRUE")
+                        tt_posts = await conn.fetch("SELECT discord_id, tiktok_url AS post_url, bounty_tag, views FROM tracked_posts_tiktok WHERE is_bounty = TRUE")
+                        ig_posts = await conn.fetch("SELECT discord_id, instagram_url AS post_url, bounty_tag, views FROM tracked_posts_instagram WHERE is_bounty = TRUE") # <--- FALTABA ESTO
                         
-                        await calculate_bounty_earnings(
-                            conn, table, str(post['discord_id']), post['post_url'], post['bounty_tag'], post['views'] or 0
-                        )
-            except Exception as e:
-                print(f"❌ Error en bounty_loop: {e}")
-            await asyncio.sleep(300)
+                        all_posts = yt_posts + tt_posts + ig_posts
+
+                        for post in all_posts:
+                            url = post["post_url"]
+                            # Lógica para elegir tabla
+                            if "youtube.com" in url or "youtu.be" in url:
+                                table = "tracked_posts"
+                            elif "instagram.com" in url:
+                                table = "tracked_posts_instagram"
+                            else:
+                                table = "tracked_posts_tiktok"
+                            
+                            await calculate_bounty_earnings(
+                                conn, table, str(post['discord_id']), url, post['bounty_tag'], post['views'] or 0
+                            )
+                except Exception as e:
+                    print(f"❌ Error en bounty_loop: {e}")
+                await asyncio.sleep(300)
 
 main_bot = MainBot()
 
@@ -1038,8 +1047,10 @@ async def mis_videos(interaction: discord.Interaction):
     async with main_bot.db_pool.acquire() as conn:
         yt = await conn.fetch("SELECT post_url as url, views, likes, uploaded_at, 'YouTube' as platform FROM tracked_posts WHERE discord_id = $1", discord_id)
         tt = await conn.fetch("SELECT tiktok_url as url, views, likes, uploaded_at, 'TikTok' as platform FROM tracked_posts_tiktok WHERE discord_id = $1", discord_id)
+        ig = await conn.fetch("SELECT instagram_url as url, views, likes, uploaded_at, 'Instagram' as platform FROM tracked_posts_instagram WHERE discord_id = $1", discord_id) # <--- FALTABA ESTO
 
-    all_videos = [dict(v) for v in yt] + [dict(v) for v in tt]
+    # Unimos las 3 listas
+    all_videos = [dict(v) for v in yt] + [dict(v) for v in tt] + [dict(v) for v in ig]
     all_videos.sort(key=lambda x: x['uploaded_at'] or datetime.min, reverse=True)
 
     if not all_videos:
@@ -1048,7 +1059,8 @@ async def mis_videos(interaction: discord.Interaction):
 
     embed = discord.Embed(title="🎬 Mis Videos", color=0x9146FF)
     for v in all_videos[:10]:
-        emoji = "▶️" if v['platform'] == 'YouTube' else "🎵"
+        # Elegimos emoji según plataforma
+        emoji = "▶️" if v['platform'] == 'YouTube' else "📸" if v['platform'] == 'Instagram' else "🎵"
         embed.add_field(name=f"{emoji} {v['platform']}", value=f"[Link]({v['url']})\n👁️ {v['views']} | ❤️ {v['likes']}", inline=False)
     
     await interaction.response.send_message(embed=embed, ephemeral=True)
@@ -1057,8 +1069,17 @@ async def mis_videos(interaction: discord.Interaction):
 @app_commands.default_permissions(administrator=True)
 async def set_bounty(interaction: discord.Interaction, plataforma: str, post_url: str, bounty_tag: str):
     plataforma = plataforma.lower()
-    table = "tracked_posts" if plataforma == "youtube" else "tracked_posts_tiktok"
-    url_col = "post_url" if plataforma == "youtube" else "tiktok_url"
+    
+    # Selección de tabla correcta
+    if plataforma == "youtube":
+        table = "tracked_posts"
+        url_col = "post_url"
+    elif plataforma == "instagram": # <--- AGREGADO
+        table = "tracked_posts_instagram"
+        url_col = "instagram_url"
+    else: # Asumimos TikTok por descarte o explícito
+        table = "tracked_posts_tiktok"
+        url_col = "tiktok_url"
 
     async with main_bot.db_pool.acquire() as conn:
         exists = await conn.fetchval(f"SELECT 1 FROM {table} WHERE {url_col} = $1", post_url)
@@ -1067,7 +1088,7 @@ async def set_bounty(interaction: discord.Interaction, plataforma: str, post_url
             return
         await conn.execute(f"UPDATE {table} SET is_bounty = TRUE, bounty_tag = $1, starting_views = views WHERE {url_col} = $2", bounty_tag, post_url)
     
-    await interaction.response.send_message(f"✅ Bounty **{bounty_tag}** activado.")
+    await interaction.response.send_message(f"✅ Bounty **{bounty_tag}** activado en {plataforma}.")
 
 @main_bot.tree.command(name="set-bounty-rate", description="Configura el pago por views")
 @app_commands.default_permissions(administrator=True)
