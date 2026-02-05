@@ -26,7 +26,7 @@ class VerificationPayload(BaseModel):
 app = FastAPI()
 app.db_pool = None
 
-@app.on_event("startup")
+app.on_event("startup")
 async def startup():
     print("⏳ Conectando metrics_server a DB...")
     app.db_pool = await asyncpg.create_pool(
@@ -35,7 +35,24 @@ async def startup():
         min_size=1,
         max_size=5
     )
-    print("🟢 metrics_server conectado.")
+    
+    # --- AUTO-FIX DE BASE DE DATOS (EL DOCTOR 👨‍⚕️) ---
+    print("🔧 Ejecutando mantenimiento de tablas...")
+    async with app.db_pool.acquire() as conn:
+        tables = ["tracked_posts", "tracked_posts_tiktok", "tracked_posts_instagram"]
+        for table in tables:
+            try:
+                await conn.execute(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS video_id TEXT;")
+                
+                await conn.execute(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS shares INTEGER DEFAULT 0;")
+                
+                print(f"✅ Columnas verificadas en {table}")
+                
+            except Exception as e:
+                print(f"⚠️ Nota sobre {table}: {e}")
+    # ---------------------------------------------------
+
+    print("🟢 metrics_server conectado y tablas actualizadas.")
 
 # ---------------------------------------------------------
 # ENDPOINT 1: Para que n8n sepa qué cuentas scrapear (CRON)
