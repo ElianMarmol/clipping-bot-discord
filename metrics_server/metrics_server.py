@@ -70,46 +70,59 @@ async def get_active_users(platform: str):
     return [dict(u) for u in users]
 
 # ---------------------------------------------------------
-# ENDPOINT 2: Recibir Métricas (Separado por plataforma)
+# ENDPOINT 2: Recibir Métricas Y CALCULAR DINERO
 # ---------------------------------------------------------
 @app.post("/metrics/ingest")
 async def save_metrics(payload: MetricsPayload):
-    """Guarda o actualiza métricas recibidas de n8n"""
     print(f"📩 Métricas recibidas para {payload.platform} ({len(payload.videos)} videos)")
     
-    # 1. LÓGICA DE SELECCIÓN DE TABLA (Aquí faltaba Instagram)
+    # 1. Definir la TARIFA (Esto hace que sea real)
+    # $0.025 por cada 1,000 vistas
+    RATE_PER_1K = 0.025 
+
+    # 2. Seleccionar la tabla y columna correcta según la red social
     if payload.platform == "youtube":
         table_name = "tracked_posts"
         url_col = "post_url"
-    elif payload.platform == "instagram":  # <--- NUEVO BLOQUE
+    elif payload.platform == "instagram":
         table_name = "tracked_posts_instagram"
         url_col = "instagram_url"
     else:
-        # Por defecto TikTok
         table_name = "tracked_posts_tiktok"
         url_col = "tiktok_url"
 
     async with app.db_pool.acquire() as conn:
         for v in payload.videos:
-            # ⚠️ CORRECCIÓN: Agregamos 'video_id' al INSERT y a los VALUES
+            # 3. 🧮 CÁLCULO MATEMÁTICO AUTOMÁTICO
+            # Si tiene 10,000 vistas -> (10000 / 1000) * 0.025 = $0.25
+            dinero_generado = (v.views / 1000) * RATE_PER_1K
+            
+            # 4. GUARDAR TODO EN LA BASE DE DATOS (Vistas + Dinero)
+            # Fíjate que ahora insertamos 'final_earned_usd'
             await conn.execute(f'''
-                INSERT INTO {table_name} (discord_id, {url_col}, video_id, views, likes, shares)
-                VALUES ($1, $2, $3, $4, $5, $6)
-                ON CONFLICT ({url_col})
+                INSERT INTO {table_name} (discord_id, {url_col}, video_id, views, likes, shares, final_earned_usd)
+                VALUES ($1, $2, $3, $4, $5, $6, $7)
+                ON CONFLICT ({url_col})  
                 DO UPDATE SET 
                     views = EXCLUDED.views,
                     likes = EXCLUDED.likes,
-                    shares = EXCLUDED.shares
+                    shares = EXCLUDED.shares,
+                    final_earned_usd = EXCLUDED.final_earned_usd  -- 🔄 Actualiza el dinero si suben las vistas
             ''',
                 str(payload.discord_id),
                 v.url,
-                v.video_id,  # <--- AHORA SÍ ENVIAMOS EL ID DEL VIDEO
+                v.video_id,
                 v.views,
                 v.likes,
-                v.shares
+                v.shares,
+                dinero_generado  # <--- Aquí va el valor calculado automáticamente
             )
 
-    return {"status": "ok", "processed": len(payload.videos)}
+    return {
+        "status": "ok", 
+        "processed": len(payload.videos), 
+        "mode": "REAL_MONEY_CALCULATION"
+    }
 
 # ---------------------------------------------------------
 # ENDPOINT 3: Confirmar Verificación (Desde n8n)
