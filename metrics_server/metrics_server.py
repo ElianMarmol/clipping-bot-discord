@@ -78,7 +78,7 @@ async def save_metrics(payload: MetricsPayload):
             await conn.execute(f'''
                 INSERT INTO {table_name} (discord_id, {url_col}, video_id, views, likes, shares)
                 VALUES ($1, $2, $3, $4, $5, $6)
-                ON CONFLICT (discord_id, {url_col})
+                ON CONFLICT ({url_col})
                 DO UPDATE SET 
                     views = EXCLUDED.views,
                     likes = EXCLUDED.likes,
