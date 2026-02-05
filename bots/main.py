@@ -1133,7 +1133,7 @@ if __name__ == "__main__":
     main_bot.run(token)
 
 # -----------------------------------------------------------------------------
-# CLASES DE INTERFAZ (UI) - PANEL DE CONTROL
+# CLASES DE INTERFAZ (UI) - PANEL DE CONTROL (CORREGIDO)
 # -----------------------------------------------------------------------------
 
 class AdminControlView(discord.ui.View):
@@ -1229,10 +1229,6 @@ class AdminControlView(discord.ui.View):
     async def pagar_callback(self, interaction: discord.Interaction):
         user_id = self.current_user_id
         async with self.bot.db_pool.acquire() as conn:
-            # Resetear saldos (Setear final_earned_usd a 0 o borrar filas según tu lógica de negocio)
-            # Aquí asumimos que borrar los videos PAGADOS es lo mejor para limpiar, 
-            # O puedes poner views_paid = views. (Para simplificar, borramos los videos cobrados o los ponemos a 0 ganancia)
-            
             # Opción A: Borrar todo lo pagado (Más limpio)
             await conn.execute("DELETE FROM tracked_posts WHERE discord_id = $1", str(user_id))
             await conn.execute("DELETE FROM tracked_posts_tiktok WHERE discord_id = $1", str(user_id))
@@ -1255,16 +1251,16 @@ class AdminControlView(discord.ui.View):
         await generar_vista_principal(self.bot, interaction)
 
 # -----------------------------------------------------------------------------
-# COMANDO PRINCIPAL Y FUNCIÓN HELPER
+# COMANDO PRINCIPAL Y FUNCIÓN HELPER (CORREGIDO: main_bot)
 # -----------------------------------------------------------------------------
 
-async def generar_vista_principal(bot, interaction):
+async def generar_vista_principal(bot_instance, interaction):
     # Buscar usuarios con deuda > 0
-    async with bot.db_pool.acquire() as conn:
+    async with bot_instance.db_pool.acquire() as conn:
         users = await conn.fetch("SELECT discord_id, payment_name FROM social_accounts")
         
     options = []
-    async with bot.db_pool.acquire() as conn:
+    async with bot_instance.db_pool.acquire() as conn:
         for u in users:
             uid = u['discord_id']
             # Calcular deuda rápida
@@ -1287,7 +1283,7 @@ async def generar_vista_principal(bot, interaction):
         return
 
     # Crear Vista
-    view = AdminControlView(bot)
+    view = AdminControlView(bot_instance)
     # Reemplazamos las opciones del select placeholder con los usuarios reales
     view.children[0].options = options[:25] 
 
@@ -1298,7 +1294,8 @@ async def generar_vista_principal(bot, interaction):
     else:
         await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
-@bot.tree.command(name="admin-control", description="ADMIN: Panel interactivo para auditar, borrar videos y pagar")
+# 👇 AQUÍ ESTABA EL ERROR: Cambiamos 'bot' por 'main_bot' 👇
+@main_bot.tree.command(name="admin-control", description="ADMIN: Panel interactivo para auditar, borrar videos y pagar")
 @app_commands.checks.has_permissions(administrator=True)
 async def admin_control(interaction: discord.Interaction):
-    await generar_vista_principal(bot, interaction)    
+    await generar_vista_principal(main_bot, interaction)
