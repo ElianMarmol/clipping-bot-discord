@@ -310,96 +310,87 @@ class MainBot(commands.Bot):
 
 main_bot = MainBot()
 
-# =============================================
-# COMANDOS DE CAMPAÑAS (RESTAURADOS)
-# =============================================
-
-@main_bot.tree.command(name="publicar-campaña", description="Publicar campaña oficial")
+@main_bot.tree.command(name="publicar-campaña", description="Crea la campaña visual Y configura el pago automáticamente")
 @app_commands.default_permissions(administrator=True)
 @app_commands.describe(
-    nombre="Nombre de la campaña",
-    descripcion="Frase gancho (ej: Gana dinero posteando clips)",
-    categoria="Ej: IRL, Gaming, Podcast",
-    plataformas="Ej: TikTok, Instagram, Youtube",
-    payrate="Ej: $0.60 per 1,000 views",
-    invite_link="Link del Servidor de Discord",
-    thumbnail_url="Link DIRECTO a la imagen (.png/.jpg)"
+    tag_interno="EL CODIGO QUE USARAN EN UPLOAD (Ej: NAVIDAD)",  # <--- NUEVO
+    precio_1k="CUANTO PAGA (Ej: 0.50)",                          # <--- NUEVO
+    nombre="Título bonito (Ej: Campaña Navideña 2026)",
+    descripcion="Frase gancho",
+    categoria="Ej: Gaming, IRL",
+    plataformas="Ej: TikTok, YT",
+    invite_link="Link del Discord",
+    thumbnail_url="Imagen (Opcional)"
 )
 async def publish_campaign(interaction: discord.Interaction, 
+                           tag_interno: str,        # Clave para la DB (ej: HALLOWEEN)
+                           precio_1k: float,        # Precio real para el cálculo
                            nombre: str, 
                            descripcion: str, 
                            categoria: str, 
                            plataformas: str,
-                           payrate: str, 
                            invite_link: str, 
                            thumbnail_url: str = None):
     
-    # 1. Usar el canal actual
-    channel = interaction.channel
+    # 1. Limpieza de datos
+    tag_limpio = tag_interno.upper().strip() # " Navidad " -> "NAVIDAD"
+    texto_precio = f"${precio_1k:.2f} USD / 1k views" # Para mostrar en el texto
     
-    # 2. Guardar en Base de Datos (Insertar y obtener ID)
+    # 2. Guardar TODO en la Base de Datos (Tarifa + Campaña Visual)
     try:
         async with main_bot.db_pool.acquire() as conn:
-            # Agregamos 'platforms' al insert y usamos RETURNING id
+            # A. INSERTAR LA TARIFA (Esto hace que funcione en /upload automáticamente)
+            await conn.execute('''
+                INSERT INTO payment_rates (rate_key, amount_per_1k, description, is_active) 
+                VALUES ($1, $2, $3, TRUE)
+                ON CONFLICT (rate_key) 
+                DO UPDATE SET amount_per_1k = $2, description = $3, is_active = TRUE
+            ''', tag_limpio, precio_1k, f"Campaña: {nombre}")
+
+            # B. INSERTAR EL ANUNCIO VISUAL
             campaign_id = await conn.fetchval('''
                 INSERT INTO campaigns (name, description, category, platforms, payrate, invite_link, thumbnail_url, created_by) 
                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
                 RETURNING id
-            ''', nombre, descripcion, categoria, plataformas, payrate, invite_link, thumbnail_url, str(interaction.user.id))
+            ''', nombre, descripcion, categoria, plataformas, texto_precio, invite_link, thumbnail_url, str(interaction.user.id))
+
     except Exception as e:
         return await interaction.response.send_message(f"❌ Error guardando en DB: {e}", ephemeral=True)
     
-    # 3. Construir el contenido
+    # 3. Construir el Embed (Mensaje Bonito)
     texto_contenido = f"""
 **{descripcion}** 🔥
 
-## Detalles de campaña 🚀
+## 🚀 Detalles de Campaña
+**Tag para subir:** `{tag_limpio}` 👈 (Usa este tag en /upload)
 **Categoría:** {categoria}
 **Plataformas:** {plataformas}
-**Audiencia:** Global 🌎
 
-## Detalles de pago 💸
-**Sistema de pago:** {payrate}
-**Minimo de Views para Pago:** 10,000 views
-**Método de Pago:** PayPal
+## 💸 Pago Configurado
+**Tarifa:** {texto_precio}
+**Minimo:** 10,000 views
+**Método:** PayPal
 
-## Únete al servidor ➡️
-Click en el boton debajo para Empezar!
+## ➡️ Únete al servidor
 """
+    embed = discord.Embed(title=f"✨ {nombre} x Latin Clipping", description=texto_contenido, color=0x00ff00)
+    if thumbnail_url: embed.set_thumbnail(url=thumbnail_url)
+    embed.set_footer(text=f"ID: {campaign_id} | Tag: {tag_limpio}")
 
-    # 4. Crear Embed
-    embed = discord.Embed(
-        title=f"{nombre} x Latin Clipping", 
-        description=texto_contenido, 
-        color=0x00ff00 # Verde Clipping
-    )
-
-    if thumbnail_url:
-        embed.set_thumbnail(url=thumbnail_url)
-
-    # Footer con el ID para referencia
-    embed.set_footer(text=f"Campaña ID: {campaign_id} | Nota: 🚨 Violacion en reglas de Campaña = Insta-Ban")
-
-    # 5. Botón
-    class JoinButton(View):
+    # 4. Enviar al canal
+    channel = interaction.channel
+    class JoinButton(discord.ui.View):
         def __init__(self, link): 
             super().__init__()
-            self.add_item(Button(label="Join Server", style=discord.ButtonStyle.link, url=link, emoji="➡️"))
+            self.add_item(discord.ui.Button(label="Unirse al Discord", style=discord.ButtonStyle.link, url=link))
     
-    # 6. ENVIAR MENSAJE
     msg = await channel.send(embed=embed, view=JoinButton(invite_link))
     
-    # 7. CRÍTICO: Actualizar la DB con el ID del mensaje enviado
-    # Esto permite que el comando 'editar' encuentre este mensaje después
+    # 5. Guardar referencia del mensaje (para poder editarlo luego)
     async with main_bot.db_pool.acquire() as conn:
-        await conn.execute('''
-            UPDATE campaigns 
-            SET message_id = $1, channel_id = $2 
-            WHERE id = $3
-        ''', str(msg.id), str(channel.id), campaign_id)
+        await conn.execute('UPDATE campaigns SET message_id=$1, channel_id=$2 WHERE id=$3', str(msg.id), str(channel.id), campaign_id)
 
-    # 8. Confirmación invisible para ti
-    await interaction.response.send_message(f"✅ Campaña **#{campaign_id}** publicada y guardada exitosamente.", ephemeral=True)
+    await interaction.response.send_message(f"✅ **¡Listo!** Campaña `{tag_limpio}` publicada y tarifa de **${precio_1k}** configurada.", ephemeral=True)
 
 
 
@@ -772,77 +763,73 @@ async def set_payrate(interaction: discord.Interaction, tipo: str, precio_por_1k
     await interaction.response.send_message(f"✅ Precio actualizado: **{key}** = **${precio_por_1k}** / 1k views.", ephemeral=True)
 
 
-# ==========================================
-# 2. UPLOAD (Campaña Normal)
-# ==========================================
-@main_bot.tree.command(name="upload", description="Sube videos para trackear (Separa links con coma)")
-@app_commands.describe(links="Ej: link1, link2, link3")
-async def upload_post(interaction: discord.Interaction, links: str):
+# ====================================================
+# 2. UPLOAD UNIFICADO (Con Autocomplete Automático)
+# ====================================================
+
+async def campaign_autocomplete(interaction: discord.Interaction, current: str) -> list[app_commands.Choice[str]]:
+    campaigns = []
+    
+    # Siempre ofrecemos la opción Normal
+    campaigns.append(app_commands.Choice(name="📹 Normal (Tarifa Base)", value="STANDARD"))
+    
+    # Buscamos campañas activas en la base de datos
+    async with main_bot.db_pool.acquire() as conn:
+        records = await conn.fetch("""
+            SELECT rate_key, amount_per_1k FROM payment_rates 
+            WHERE rate_key != 'STANDARD' AND is_active = TRUE AND rate_key ILIKE $1
+            ORDER BY created_at DESC LIMIT 24
+        """, f'%{current}%')
+        
+    for r in records:
+        # Mostramos: "NAVIDAD ($1.00/1k)"
+        campaigns.append(app_commands.Choice(name=f"🎯 {r['rate_key']} (${r['amount_per_1k']}/1k)", value=r['rate_key']))
+        
+    return campaigns
+
+@main_bot.tree.command(name="upload", description="Sube videos seleccionando la campaña activa")
+@app_commands.describe(links="Pega tus links (separados por coma)", campaña="Selecciona la campaña")
+@app_commands.autocomplete(campaña=campaign_autocomplete) # <--- CONEXIÓN INTELIGENTE
+async def upload_unified(interaction: discord.Interaction, links: str, campaña: str = "STANDARD"):
     await interaction.response.defer(ephemeral=True)
     
     lista_links = [l.strip() for l in links.split(',') if l.strip()][:10]
     discord_id = str(interaction.user.id)
+    tag_seleccionado = campaña.upper().strip()
     reporte = []
 
     async with main_bot.db_pool.acquire() as conn:
+        # Validación extra: Si eligió una campaña rara, verificamos que exista
+        if tag_seleccionado != "STANDARD":
+            existe = await conn.fetchval("SELECT 1 FROM payment_rates WHERE rate_key = $1", tag_seleccionado)
+            if not existe:
+                await interaction.followup.send(f"⚠️ La campaña `{tag_seleccionado}` ya no existe. Usa la lista desplegable.", ephemeral=True)
+                return
+
         for url in lista_links:
             plat, table, col_url = detectar_plataforma(url)
-            
             if not plat:
-                reporte.append(f"❌ Ignorado (Link no válido): {url[:20]}...")
+                reporte.append(f"❌ Link inválido: {url[:15]}...")
                 continue
 
             try:
-                # Insertamos como Normal (is_bounty = FALSE)
-                await conn.execute(f'''
-                    INSERT INTO {table} (discord_id, {col_url}, is_bounty, uploaded_at) 
-                    VALUES ($1, $2, FALSE, NOW())
-                    ON CONFLICT ({col_url}) DO NOTHING
-                ''', discord_id, url)
-                reporte.append(f"✅ **{plat.capitalize()}:** Guardado.")
-            except Exception as e:
-                reporte.append(f"⚠️ Error: {e}")
-
-    embed = discord.Embed(title="📤 Resultado de Carga", description="\n".join(reporte) or "Ningún link válido.", color=0x3498db)
-    await interaction.followup.send(embed=embed, ephemeral=True)
-
-
-# ==========================================
-# 3. BOUNTY UPLOAD (Misiones Especiales)
-# ==========================================
-@main_bot.tree.command(name="bounty-upload", description="Sube videos para una Misión/Bounty")
-@app_commands.describe(links="Links separados por coma", tag="Tag de la misión (ej: #Navidad)")
-async def upload_bounty(interaction: discord.Interaction, links: str, tag: str):
-    await interaction.response.defer(ephemeral=True)
-    
-    lista_links = [l.strip() for l in links.split(',') if l.strip()][:10]
-    discord_id = str(interaction.user.id)
-    reporte = []
-
-    # Estandarizamos el tag a mayúsculas para que coincida con la tabla de precios
-    tag_limpio = tag.upper().strip() 
-
-    async with main_bot.db_pool.acquire() as conn:
-        for url in lista_links:
-            plat, table, col_url = detectar_plataforma(url)
-            
-            if not plat:
-                reporte.append(f"❌ Link inválido.")
-                continue
-
-            try:
-                # Insertamos/Actualizamos como Bounty
+                # Determinamos si es Bounty (si no es STANDARD, es Bounty)
+                es_bounty = (tag_seleccionado != "STANDARD")
+                
+                # Insertamos el video con su TAG correcto
                 await conn.execute(f'''
                     INSERT INTO {table} (discord_id, {col_url}, is_bounty, bounty_tag, uploaded_at) 
-                    VALUES ($1, $2, TRUE, $3, NOW())
+                    VALUES ($1, $2, $3, $4, NOW())
                     ON CONFLICT ({col_url}) 
-                    DO UPDATE SET is_bounty = TRUE, bounty_tag = $3
-                ''', discord_id, url, tag_limpio)
-                reporte.append(f"🎯 **{plat.capitalize()} (Bounty):** Asignado a `{tag_limpio}`")
+                    DO UPDATE SET is_bounty = $3, bounty_tag = $4
+                ''', discord_id, url, es_bounty, tag_seleccionado)
+                
+                msg_tipo = f"Campaña `{tag_seleccionado}`" if es_bounty else "Normal"
+                reporte.append(f"✅ **{plat.capitalize()}:** Registrado en {msg_tipo}")
             except Exception as e:
                 reporte.append(f"⚠️ Error: {e}")
 
-    embed = discord.Embed(title="🎯 Carga de Bounty", description="\n".join(reporte), color=0xff9900)
+    embed = discord.Embed(title="📥 Videos Procesados", description="\n".join(reporte), color=0x3498db)
     await interaction.followup.send(embed=embed, ephemeral=True)
 
 
