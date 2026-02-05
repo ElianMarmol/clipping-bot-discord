@@ -310,87 +310,96 @@ class MainBot(commands.Bot):
 
 main_bot = MainBot()
 
-@main_bot.tree.command(name="publicar-campaña", description="Crea la campaña visual Y configura el pago automáticamente")
+# =============================================
+# COMANDOS DE CAMPAÑAS (RESTAURADOS)
+# =============================================
+
+@main_bot.tree.command(name="publicar-campaña", description="Publicar campaña oficial")
 @app_commands.default_permissions(administrator=True)
 @app_commands.describe(
-    tag_interno="EL CODIGO QUE USARAN EN UPLOAD (Ej: NAVIDAD)",  # <--- NUEVO
-    precio_1k="CUANTO PAGA (Ej: 0.50)",                          # <--- NUEVO
-    nombre="Título bonito (Ej: Campaña Navideña 2026)",
-    descripcion="Frase gancho",
-    categoria="Ej: Gaming, IRL",
-    plataformas="Ej: TikTok, YT",
-    invite_link="Link del Discord",
-    thumbnail_url="Imagen (Opcional)"
+    nombre="Nombre de la campaña",
+    descripcion="Frase gancho (ej: Gana dinero posteando clips)",
+    categoria="Ej: IRL, Gaming, Podcast",
+    plataformas="Ej: TikTok, Instagram, Youtube",
+    payrate="Ej: $0.60 per 1,000 views",
+    invite_link="Link del Servidor de Discord",
+    thumbnail_url="Link DIRECTO a la imagen (.png/.jpg)"
 )
 async def publish_campaign(interaction: discord.Interaction, 
-                           tag_interno: str,        # Clave para la DB (ej: HALLOWEEN)
-                           precio_1k: float,        # Precio real para el cálculo
                            nombre: str, 
                            descripcion: str, 
                            categoria: str, 
                            plataformas: str,
+                           payrate: str, 
                            invite_link: str, 
                            thumbnail_url: str = None):
     
-    # 1. Limpieza de datos
-    tag_limpio = tag_interno.upper().strip() # " Navidad " -> "NAVIDAD"
-    texto_precio = f"${precio_1k:.2f} USD / 1k views" # Para mostrar en el texto
+    # 1. Usar el canal actual
+    channel = interaction.channel
     
-    # 2. Guardar TODO en la Base de Datos (Tarifa + Campaña Visual)
+    # 2. Guardar en Base de Datos (Insertar y obtener ID)
     try:
         async with main_bot.db_pool.acquire() as conn:
-            # A. INSERTAR LA TARIFA (Esto hace que funcione en /upload automáticamente)
-            await conn.execute('''
-                INSERT INTO payment_rates (rate_key, amount_per_1k, description, is_active) 
-                VALUES ($1, $2, $3, TRUE)
-                ON CONFLICT (rate_key) 
-                DO UPDATE SET amount_per_1k = $2, description = $3, is_active = TRUE
-            ''', tag_limpio, precio_1k, f"Campaña: {nombre}")
-
-            # B. INSERTAR EL ANUNCIO VISUAL
+            # Agregamos 'platforms' al insert y usamos RETURNING id
             campaign_id = await conn.fetchval('''
                 INSERT INTO campaigns (name, description, category, platforms, payrate, invite_link, thumbnail_url, created_by) 
                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
                 RETURNING id
-            ''', nombre, descripcion, categoria, plataformas, texto_precio, invite_link, thumbnail_url, str(interaction.user.id))
-
+            ''', nombre, descripcion, categoria, plataformas, payrate, invite_link, thumbnail_url, str(interaction.user.id))
     except Exception as e:
         return await interaction.response.send_message(f"❌ Error guardando en DB: {e}", ephemeral=True)
     
-    # 3. Construir el Embed (Mensaje Bonito)
+    # 3. Construir el contenido
     texto_contenido = f"""
 **{descripcion}** 🔥
 
-## 🚀 Detalles de Campaña
-**Tag para subir:** `{tag_limpio}` 👈 (Usa este tag en /upload)
+## Detalles de campaña 🚀
 **Categoría:** {categoria}
 **Plataformas:** {plataformas}
+**Audiencia:** Global 🌎
 
-## 💸 Pago Configurado
-**Tarifa:** {texto_precio}
-**Minimo:** 10,000 views
-**Método:** PayPal
+## Detalles de pago 💸
+**Sistema de pago:** {payrate}
+**Minimo de Views para Pago:** 10,000 views
+**Método de Pago:** PayPal
 
-## ➡️ Únete al servidor
+## Únete al servidor ➡️
+Click en el boton debajo para Empezar!
 """
-    embed = discord.Embed(title=f"✨ {nombre} x Latin Clipping", description=texto_contenido, color=0x00ff00)
-    if thumbnail_url: embed.set_thumbnail(url=thumbnail_url)
-    embed.set_footer(text=f"ID: {campaign_id} | Tag: {tag_limpio}")
 
-    # 4. Enviar al canal
-    channel = interaction.channel
-    class JoinButton(discord.ui.View):
+    # 4. Crear Embed
+    embed = discord.Embed(
+        title=f"{nombre} x Latin Clipping", 
+        description=texto_contenido, 
+        color=0x00ff00 # Verde Clipping
+    )
+
+    if thumbnail_url:
+        embed.set_thumbnail(url=thumbnail_url)
+
+    # Footer con el ID para referencia
+    embed.set_footer(text=f"Campaña ID: {campaign_id} | Nota: 🚨 Violacion en reglas de Campaña = Insta-Ban")
+
+    # 5. Botón
+    class JoinButton(View):
         def __init__(self, link): 
             super().__init__()
-            self.add_item(discord.ui.Button(label="Unirse al Discord", style=discord.ButtonStyle.link, url=link))
+            self.add_item(Button(label="Join Server", style=discord.ButtonStyle.link, url=link, emoji="➡️"))
     
+    # 6. ENVIAR MENSAJE
     msg = await channel.send(embed=embed, view=JoinButton(invite_link))
     
-    # 5. Guardar referencia del mensaje (para poder editarlo luego)
+    # 7. CRÍTICO: Actualizar la DB con el ID del mensaje enviado
+    # Esto permite que el comando 'editar' encuentre este mensaje después
     async with main_bot.db_pool.acquire() as conn:
-        await conn.execute('UPDATE campaigns SET message_id=$1, channel_id=$2 WHERE id=$3', str(msg.id), str(channel.id), campaign_id)
+        await conn.execute('''
+            UPDATE campaigns 
+            SET message_id = $1, channel_id = $2 
+            WHERE id = $3
+        ''', str(msg.id), str(channel.id), campaign_id)
 
-    await interaction.response.send_message(f"✅ **¡Listo!** Campaña `{tag_limpio}` publicada y tarifa de **${precio_1k}** configurada.", ephemeral=True)
+    # 8. Confirmación invisible para ti
+    await interaction.response.send_message(f"✅ Campaña **#{campaign_id}** publicada y guardada exitosamente.", ephemeral=True)
 
 
 
