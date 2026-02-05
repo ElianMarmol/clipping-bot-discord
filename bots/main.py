@@ -1131,3 +1131,174 @@ async def sync(interaction: discord.Interaction):
 if __name__ == "__main__":
     token = os.getenv('DISCORD_MAIN_BOT_TOKEN')
     main_bot.run(token)
+
+# -----------------------------------------------------------------------------
+# CLASES DE INTERFAZ (UI) - PANEL DE CONTROL
+# -----------------------------------------------------------------------------
+
+class AdminControlView(discord.ui.View):
+    def __init__(self, bot_ref):
+        super().__init__(timeout=None)
+        self.bot = bot_ref
+        self.current_user_id = None
+
+    # --- 1. MENÚ PARA SELECCIONAR USUARIO ---
+    @discord.ui.select(placeholder="👥 Selecciona un usuario con deuda...", custom_id="select_user", min_values=1, max_values=1)
+    async def select_user_callback(self, interaction: discord.Interaction, select: discord.ui.Select):
+        # Guardamos el ID del usuario seleccionado
+        self.current_user_id = int(select.values[0])
+        await self.mostrar_detalle_usuario(interaction)
+
+    # --- MÉTODO PRINCIPAL: MOSTRAR DETALLE ---
+    async def mostrar_detalle_usuario(self, interaction: discord.Interaction):
+        user_id = self.current_user_id
+        
+        # Recuperar datos frescos de la DB
+        async with self.bot.db_pool.acquire() as conn:
+            # Datos Usuario
+            user_data = await conn.fetchrow("SELECT payment_email, payment_name FROM social_accounts WHERE discord_id = $1 LIMIT 1", str(user_id))
+            
+            # Videos y Ganancias
+            yt_vids = await conn.fetch("SELECT 'YouTube' as src, post_url, final_earned_usd, bounty_tag FROM tracked_posts WHERE discord_id = $1", str(user_id))
+            tt_vids = await conn.fetch("SELECT 'TikTok' as src, tiktok_url as post_url, final_earned_usd, bounty_tag FROM tracked_posts_tiktok WHERE discord_id = $1", str(user_id))
+            ig_vids = await conn.fetch("SELECT 'Instagram' as src, instagram_url as post_url, final_earned_usd, bounty_tag FROM tracked_posts_instagram WHERE discord_id = $1", str(user_id))
+
+        all_vids = yt_vids + tt_vids + ig_vids
+        total_deuda = sum([v['final_earned_usd'] or 0 for v in all_vids])
+        
+        # Construir Embed
+        embed = discord.Embed(title=f"🕵️ Auditoría de Usuario", color=discord.Color.blue())
+        embed.description = f"<@{user_id}>\n**Deuda Total:** `${total_deuda:.2f}`"
+        
+        paypal_info = user_data['payment_email'] if user_data and user_data['payment_email'] else "⚠️ No configurado"
+        nombre_pago = user_data['payment_name'] if user_data and user_data['payment_name'] else ""
+        embed.add_field(name="💳 Datos de Pago", value=f"Email: `{paypal_info}`\nTitular: {nombre_pago}", inline=False)
+
+        # Crear lista de videos para el texto y para el menú de borrar
+        lista_texto = ""
+        options_borrar = []
+        
+        for i, vid in enumerate(all_vids[:20]): # Límite visual de 20
+            ganancia = vid['final_earned_usd'] or 0
+            tag = vid['bounty_tag'] or "Std"
+            url_corta = vid['post_url'][-15:] # Solo mostramos el final del link
+            lista_texto += f"**{i+1}.** [{vid['src']}] `${ganancia:.2f}` ({tag}) -> [Link]({vid['post_url']})\n"
+            
+            # Opción para el menú de borrar
+            label = f"{i+1}. {vid['src']} (${ganancia:.2f})"
+            options_borrar.append(discord.SelectOption(label=label, value=vid['post_url'], description=f"Borrar: {url_corta}", emoji="🗑️"))
+
+        if not lista_texto: lista_texto = "No hay videos activos."
+        embed.add_field(name="📹 Videos Activos", value=lista_texto, inline=False)
+
+        # --- ACTUALIZAR LA VISTA (BOTONES) ---
+        self.clear_items() # Borramos el selector de usuarios
+
+        # 1. Menú de Borrar (Si hay videos)
+        if options_borrar:
+            select_borrar = discord.ui.Select(placeholder="🗑️ Selecciona un video para ELIMINARLO", options=options_borrar, custom_id="del_vid")
+            select_borrar.callback = self.borrar_video_callback
+            self.add_item(select_borrar)
+
+        # 2. Botón Pagar
+        btn_pagar = discord.ui.Button(label="💸 Pagar y Resetear", style=discord.ButtonStyle.green, custom_id="pay_btn")
+        btn_pagar.callback = self.pagar_callback
+        self.add_item(btn_pagar)
+
+        # 3. Botón Volver
+        btn_volver = discord.ui.Button(label="🔙 Volver a Lista", style=discord.ButtonStyle.grey, custom_id="back_btn")
+        btn_volver.callback = self.volver_callback
+        self.add_item(btn_volver)
+
+        await interaction.response.edit_message(embed=embed, view=self)
+
+    # --- CALLBACK: BORRAR VIDEO ---
+    async def borrar_video_callback(self, interaction: discord.Interaction):
+        video_url = interaction.data['values'][0] # La URL viene en el value
+        
+        async with self.bot.db_pool.acquire() as conn:
+            # Borramos de las 3 tablas por si acaso
+            await conn.execute("DELETE FROM tracked_posts WHERE post_url = $1", video_url)
+            await conn.execute("DELETE FROM tracked_posts_tiktok WHERE tiktok_url = $1", video_url)
+            await conn.execute("DELETE FROM tracked_posts_instagram WHERE instagram_url = $1", video_url)
+        
+        # Recargamos la vista del usuario
+        await self.mostrar_detalle_usuario(interaction) # Refresca todo
+
+    # --- CALLBACK: PAGAR ---
+    async def pagar_callback(self, interaction: discord.Interaction):
+        user_id = self.current_user_id
+        async with self.bot.db_pool.acquire() as conn:
+            # Resetear saldos (Setear final_earned_usd a 0 o borrar filas según tu lógica de negocio)
+            # Aquí asumimos que borrar los videos PAGADOS es lo mejor para limpiar, 
+            # O puedes poner views_paid = views. (Para simplificar, borramos los videos cobrados o los ponemos a 0 ganancia)
+            
+            # Opción A: Borrar todo lo pagado (Más limpio)
+            await conn.execute("DELETE FROM tracked_posts WHERE discord_id = $1", str(user_id))
+            await conn.execute("DELETE FROM tracked_posts_tiktok WHERE discord_id = $1", str(user_id))
+            await conn.execute("DELETE FROM tracked_posts_instagram WHERE discord_id = $1", str(user_id))
+            
+        embed = discord.Embed(title="✅ Pago Registrado", description=f"Se ha reseteado la cuenta de <@{user_id}>.", color=discord.Color.green())
+        
+        # Volver al menú principal
+        self.clear_items()
+        btn_back = discord.ui.Button(label="🏠 Volver al Inicio", style=discord.ButtonStyle.primary)
+        btn_back.callback = self.volver_callback
+        self.add_item(btn_back)
+        
+        await interaction.response.edit_message(embed=embed, view=self)
+
+    # --- CALLBACK: VOLVER ---
+    async def volver_callback(self, interaction: discord.Interaction):
+        # Reiniciamos la vista llamando al comando original logicamente
+        # Necesitamos repoblar el select de usuarios
+        await generar_vista_principal(self.bot, interaction)
+
+# -----------------------------------------------------------------------------
+# COMANDO PRINCIPAL Y FUNCIÓN HELPER
+# -----------------------------------------------------------------------------
+
+async def generar_vista_principal(bot, interaction):
+    # Buscar usuarios con deuda > 0
+    async with bot.db_pool.acquire() as conn:
+        users = await conn.fetch("SELECT discord_id, payment_name FROM social_accounts")
+        
+    options = []
+    async with bot.db_pool.acquire() as conn:
+        for u in users:
+            uid = u['discord_id']
+            # Calcular deuda rápida
+            yt = await conn.fetchval("SELECT COALESCE(SUM(final_earned_usd),0) FROM tracked_posts WHERE discord_id=$1", uid)
+            tt = await conn.fetchval("SELECT COALESCE(SUM(final_earned_usd),0) FROM tracked_posts_tiktok WHERE discord_id=$1", uid)
+            ig = await conn.fetchval("SELECT COALESCE(SUM(final_earned_usd),0) FROM tracked_posts_instagram WHERE discord_id=$1", uid)
+            total = (yt or 0) + (tt or 0) + (ig or 0)
+            
+            if total > 0:
+                # Discord limita los select options a 25. Mostramos los top 25.
+                label = f"{u['payment_name'] or 'Usuario'} (${total:.2f})"
+                options.append(discord.SelectOption(label=label, value=str(uid), description=f"ID: {uid}"))
+
+    if not options:
+        embed = discord.Embed(title="👍 Todo al día", description="No hay usuarios con saldo pendiente de cobro.", color=discord.Color.green())
+        if interaction.response.is_done():
+            await interaction.edit_original_response(embed=embed, view=None)
+        else:
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+        return
+
+    # Crear Vista
+    view = AdminControlView(bot)
+    # Reemplazamos las opciones del select placeholder con los usuarios reales
+    view.children[0].options = options[:25] 
+
+    embed = discord.Embed(title="🎛️ Panel de Control Financiero", description="Selecciona un usuario para auditar, borrar videos o registrar pagos.", color=discord.Color.gold())
+    
+    if interaction.response.is_done():
+        await interaction.edit_original_response(embed=embed, view=view)
+    else:
+        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+
+@bot.tree.command(name="admin-control", description="ADMIN: Panel interactivo para auditar, borrar videos y pagar")
+@app_commands.checks.has_permissions(administrator=True)
+async def admin_control(interaction: discord.Interaction):
+    await generar_vista_principal(bot, interaction)    
