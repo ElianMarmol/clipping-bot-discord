@@ -1255,6 +1255,9 @@ class AdminControlView(discord.ui.View):
 # -----------------------------------------------------------------------------
 
 async def generar_vista_principal(bot_instance, interaction):
+    # NOTA: Como usamos defer() arriba, response.is_done() será True.
+    # Así que usaremos edit_original_response o followup.
+
     # Buscar usuarios con deuda > 0
     async with bot_instance.db_pool.acquire() as conn:
         users = await conn.fetch("SELECT discord_id, payment_name FROM social_accounts")
@@ -1274,28 +1277,36 @@ async def generar_vista_principal(bot_instance, interaction):
                 label = f"{u['payment_name'] or 'Usuario'} (${total:.2f})"
                 options.append(discord.SelectOption(label=label, value=str(uid), description=f"ID: {uid}"))
 
+    # CASO 1: NADIE TIENE DEUDA
     if not options:
         embed = discord.Embed(title="👍 Todo al día", description="No hay usuarios con saldo pendiente de cobro.", color=discord.Color.green())
         if interaction.response.is_done():
-            await interaction.edit_original_response(embed=embed, view=None)
+            await interaction.followup.send(embed=embed, ephemeral=True) # Usamos followup porque ya hicimos defer
         else:
             await interaction.response.send_message(embed=embed, ephemeral=True)
         return
 
-    # Crear Vista
+    # CASO 2: HAY DEUDAS -> MOSTRAR PANEL
     view = AdminControlView(bot_instance)
-    # Reemplazamos las opciones del select placeholder con los usuarios reales
     view.children[0].options = options[:25] 
 
     embed = discord.Embed(title="🎛️ Panel de Control Financiero", description="Selecciona un usuario para auditar, borrar videos o registrar pagos.", color=discord.Color.gold())
     
     if interaction.response.is_done():
-        await interaction.edit_original_response(embed=embed, view=view)
+        # Si ya respondimos o diferimos, editamos el mensaje original o enviamos followup
+        try:
+            await interaction.edit_original_response(embed=embed, view=view)
+        except:
+            await interaction.followup.send(embed=embed, view=view, ephemeral=True)
     else:
         await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
-# 👇 AQUÍ ESTABA EL ERROR: Cambiamos 'bot' por 'main_bot' 👇
+# 👇 EL CAMBIO CLAVE ESTÁ AQUÍ 👇
 @main_bot.tree.command(name="admin-control", description="ADMIN: Panel interactivo para auditar, borrar videos y pagar")
 @app_commands.checks.has_permissions(administrator=True)
 async def admin_control(interaction: discord.Interaction):
+    # 1. AVISAMOS A DISCORD QUE ESTAMOS PENSANDO (Gana 15 minutos de tiempo)
+    await interaction.response.defer(ephemeral=True)
+    
+    # 2. PROCESAMOS LA LÓGICA PESADA
     await generar_vista_principal(main_bot, interaction)
