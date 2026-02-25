@@ -418,20 +418,28 @@ Click en el boton debajo para Empezar!
     await interaction.response.send_message(f"✅ Campaña **#{campaign_id}** ({tag_limpio}) publicada y tarifa de **${precio_numerico}** configurada.", ephemeral=True)
 
 
-@main_bot.tree.command(name="editar-campaña", description="Edita una campaña activa y actualiza su mensaje")
+# ====================================================
+# COMANDO: EDITAR CAMPAÑA (Visual + Financiero)
+# ====================================================
+
+@main_bot.tree.command(name="editar-campaña", description="Edita una campaña activa (Visual y/o Tarifa matemática)")
 @app_commands.default_permissions(administrator=True)
 @app_commands.describe(
     id_campana="El ID numérico de la campaña (mira el footer del mensaje)",
+    nuevo_precio_numerico="(Opcional) Cambiar el precio real (Ej: 0.50)", # <--- NUEVO
+    tag_interno="(Opcional) El TAG si quieres cambiar la tarifa (Ej: NAVIDAD)", # <--- NUEVO
     nombre="(Opcional) Nuevo nombre",
     descripcion="(Opcional) Nueva frase gancho",
     categoria="(Opcional) Nueva categoría",
     plataformas="(Opcional) Nuevas plataformas",
-    payrate="(Opcional) Nuevo pago",
+    payrate="(Opcional) Nuevo texto visual de pago",
     invite_link="(Opcional) Nuevo link",
     thumbnail_url="(Opcional) Nueva imagen"
 )
 async def edit_campaign(interaction: discord.Interaction, 
                         id_campana: int, 
+                        nuevo_precio_numerico: float = None, # <--- NUEVO
+                        tag_interno: str = None,             # <--- NUEVO
                         nombre: str = None, 
                         descripcion: str = None, 
                         categoria: str = None,
@@ -442,17 +450,35 @@ async def edit_campaign(interaction: discord.Interaction,
     
     await interaction.response.defer(ephemeral=True)
 
+    reporte_acciones = []
+
     async with main_bot.db_pool.acquire() as conn:
-        # 1. Obtener datos actuales
+        
+        # --- 1. ACTUALIZAR LA MATEMÁTICA (Si el usuario lo pide) ---
+        if nuevo_precio_numerico is not None and tag_interno is not None:
+            tag_limpio = tag_interno.upper().strip()
+            # Actualizamos o insertamos la nueva tarifa
+            await conn.execute('''
+                INSERT INTO payment_rates (rate_key, amount_per_1k, description, is_active) 
+                VALUES ($1, $2, 'Tarifa actualizada vía edición', TRUE)
+                ON CONFLICT (rate_key) 
+                DO UPDATE SET amount_per_1k = $2, is_active = TRUE
+            ''', tag_limpio, nuevo_precio_numerico)
+            reporte_acciones.append(f"✅ Tarifa de `{tag_limpio}` actualizada a **${nuevo_precio_numerico}**")
+        elif (nuevo_precio_numerico and not tag_interno) or (tag_interno and not nuevo_precio_numerico):
+            return await interaction.followup.send("⚠️ Para cambiar la tarifa matemática, debes llenar AMBOS campos: `nuevo_precio_numerico` y `tag_interno`.")
+
+
+        # --- 2. OBTENER DATOS ACTUALES (Para la parte visual) ---
         camp = await conn.fetchrow("SELECT * FROM campaigns WHERE id = $1", id_campana)
         
         if not camp:
             return await interaction.followup.send("❌ Campaña no encontrada (Revisa el ID).")
         
         if not camp['message_id'] or not camp['channel_id']:
-            return await interaction.followup.send("⚠️ Esta campaña es antigua o no se guardó bien el mensaje. No puedo editarla visualmente.")
+            return await interaction.followup.send("⚠️ Esta campaña es antigua o no se guardó bien el mensaje original. No puedo editarla visualmente.")
 
-        # 2. Mezclar datos nuevos con viejos (Si no envías nada, mantiene lo anterior)
+        # --- 3. MEZCLAR DATOS NUEVOS CON VIEJOS ---
         new_name = nombre or camp['name']
         new_desc = descripcion or camp['description']
         new_cat = categoria or camp['category']
@@ -461,14 +487,14 @@ async def edit_campaign(interaction: discord.Interaction,
         new_link = invite_link or camp['invite_link']
         new_thumb = thumbnail_url or camp['thumbnail_url']
 
-        # 3. Actualizar Base de Datos
+        # --- 4. ACTUALIZAR BASE DE DATOS VISUAL ---
         await conn.execute('''
             UPDATE campaigns 
             SET name=$1, description=$2, category=$3, platforms=$4, payrate=$5, invite_link=$6, thumbnail_url=$7 
             WHERE id=$8
         ''', new_name, new_desc, new_cat, new_plat, new_rate, new_link, new_thumb, id_campana)
 
-    # 4. ACTUALIZAR EL MENSAJE EN DISCORD
+    # --- 5. ACTUALIZAR EL MENSAJE EN DISCORD ---
     try:
         channel = interaction.client.get_channel(int(camp['channel_id']))
         if not channel:
@@ -476,11 +502,17 @@ async def edit_campaign(interaction: discord.Interaction,
             
         message = await channel.fetch_message(int(camp['message_id']))
         
-        # 5. Reconstruir el Embed (Estilo Gigante)
+        # Ojo: Recuperamos el TAG para mostrarlo en el embed, o usamos uno genérico si no lo pasó ahora
+        tag_mostrar = tag_interno.upper().strip() if tag_interno else "REVISA-EL-TAG"
+
+        # Reconstruir el Embed (Estilo Gigante adaptado al nuevo modelo)
         texto_contenido = f"""
 **{new_desc}** 🔥
 
-## Detalles de campaña 🚀
+## 🚀 Cómo participar
+**TAG PARA SUBIR:** `{tag_mostrar}` 👈 (Selecciona este tag en `/upload`)
+
+## Detalles de campaña
 **Categoría:** {new_cat}
 **Plataformas:** {new_plat}
 **Audiencia:** Global 🌎
@@ -494,7 +526,7 @@ async def edit_campaign(interaction: discord.Interaction,
 Click en el boton debajo para Empezar!
 """
         new_embed = discord.Embed(
-            title=f"{new_name} x Latin Clipping", 
+            title=f"✨ {new_name} x Latin Clipping", 
             description=texto_contenido, 
             color=0x00ff00
         )
@@ -502,23 +534,47 @@ Click en el boton debajo para Empezar!
         if new_thumb:
             new_embed.set_thumbnail(url=new_thumb)
             
-        new_embed.set_footer(text=f"Campaña ID: {id_campana} | Nota: 🚨 Violacion en reglas de Campaña = Insta-Ban")
+        new_embed.set_footer(text=f"ID: {id_campana} | TAG ACTIVO: {tag_mostrar} | 🚨 Violacion de reglas = Ban")
 
-        # Botón actualizado
         class JoinButton(discord.ui.View):
             def __init__(self, link): 
                 super().__init__()
                 self.add_item(discord.ui.Button(label="Join Server", style=discord.ButtonStyle.link, url=link, emoji="➡️"))
 
-        # 6. Edición Mágica
+        # Edición Mágica
         await message.edit(embed=new_embed, view=JoinButton(new_link))
+        reporte_acciones.append(f"✅ Anuncio visual **#{id_campana}** actualizado en el canal.")
         
-        await interaction.followup.send(f"✅ Campaña **#{id_campana}** actualizada visualmente.", ephemeral=True)
+        await interaction.followup.send("\n".join(reporte_acciones), ephemeral=True)
 
     except discord.NotFound:
         await interaction.followup.send("⚠️ Datos guardados en DB, pero no encontré el mensaje original (quizás fue borrado).")
     except Exception as e:
         await interaction.followup.send(f"❌ Error técnico al editar: {e}")
+
+# ====================================================
+# COMANDO: AJUSTAR TARIFA (Silencioso / Tarifa Base)
+# ====================================================
+
+@main_bot.tree.command(name="admin-ajustar-tarifa", description="ADMIN: Cambia el precio de un tag en la base de datos silenciosamente")
+@app_commands.default_permissions(administrator=True)
+@app_commands.describe(
+    tag="El código interno (ej: NAVIDAD o STANDARD)", 
+    nuevo_precio="Precio real en USD por 1k views (Ej: 0.50)"
+)
+async def adjust_rate(interaction: discord.Interaction, tag: str, nuevo_precio: float):
+    tag_limpio = tag.upper().strip()
+    
+    async with main_bot.db_pool.acquire() as conn:
+        # Actualiza o inserta la tarifa directamente en el motor de cálculo
+        await conn.execute('''
+            INSERT INTO payment_rates (rate_key, amount_per_1k, description, is_active) 
+            VALUES ($1, $2, 'Tarifa ajustada manualmente', TRUE)
+            ON CONFLICT (rate_key) 
+            DO UPDATE SET amount_per_1k = $2, is_active = TRUE
+        ''', tag_limpio, nuevo_precio)
+        
+    await interaction.response.send_message(f"✅ Tarifa matemática actualizada: **{tag_limpio}** ahora calcula **${nuevo_precio}** por cada 1,000 vistas.", ephemeral=True)
 
 @main_bot.tree.command(name="list-campaigns", description="Muestra campañas activas")
 async def list_campaigns(interaction: discord.Interaction):
